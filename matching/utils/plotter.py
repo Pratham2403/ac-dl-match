@@ -20,6 +20,7 @@ class BenchmarkPlotter:
             "GREEDY": "#FFA07A",           # Light Salmon
             "BLM_TS": "#87CEFA",           # Light Sky Blue
             "ORIGINAL_DL_MATCH": "#4682B4",# Steel Blue
+            "DRL": "#8A2BE2",              # BlueViolet
             "AC_DL_MATCH": "#DC143C"       # Crimson (Highlight)
         }
         
@@ -28,6 +29,7 @@ class BenchmarkPlotter:
             "GREEDY": "square",
             "BLM_TS": "diamond",
             "ORIGINAL_DL_MATCH": "triangle-up",
+            "DRL": "x",
             "AC_DL_MATCH": "star"
         }
 

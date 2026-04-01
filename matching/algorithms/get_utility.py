@@ -5,8 +5,8 @@ def get_utility(delay, energy, reliability, cost, task_weights, hops=1, k_max=3)
     # Context-Aware Utility
     raw_utility = (w1 / (delay + 1e-5)) + (w2 / (energy + 1e-5)) + (w3 * reliability) - (w4 * cost)
     
-    # k-hop Penalty (New Novelty)
-    k_hop_penalty = 1 - (0.1 * hops / k_max)
+    # k-hop Penalty
+    k_hop_penalty = 1 - (0.3 * hops / k_max)
     raw_utility *= k_hop_penalty
     
     try:
