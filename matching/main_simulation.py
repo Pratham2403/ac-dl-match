@@ -24,18 +24,24 @@ from entities.fog_node import FogNode
 from entities.edge_node import EdgeNode
 
 # 1. Setup Logging
-os.makedirs("logs", exist_ok=True)
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-log_file_path = f"logs/simulation_{timestamp}.log"
+log_file_path = None  # Set later only if logging is needed
+_log_file_handle = None
+
+def init_logging():
+    global log_file_path, _log_file_handle
+    os.makedirs("logs", exist_ok=True)
+    log_file_path = f"logs/simulation_{timestamp}.log"
+    _log_file_handle = open(log_file_path, "a")
 
 def log_message(msg):
-    with open(log_file_path, "a") as f:
-        f.write(msg + "\n")
+    if _log_file_handle:
+        _log_file_handle.write(msg + "\n")
 
 # 2. Main Simulation Loop
-def run_simulation(policy, num_slots=100, num_fogs=3, num_edges=10, quality="average"):
+def run_simulation(policy, num_slots=100, num_fogs=3, num_edges=10, quality="average", verbose=True):
     reset_drl()
-    log_message(f"\n{'='*20} STARTING POLICY: {policy} {'='*20}")
+    if verbose: log_message(f"\n{'='*20} STARTING POLICY: {policy} {'='*20}")
     
     K_MAX_RETRIES = 3
     MIN_FOGS = num_fogs
@@ -93,19 +99,19 @@ def run_simulation(policy, num_slots=100, num_fogs=3, num_edges=10, quality="ave
                         edge.fog_metrics[best_fog.id]["last_pi"] = 0.9 * edge.fog_metrics[best_fog.id]["last_pi"] + 0.1 * 1.0
                         timeslot_delay += edge.fog_metrics[best_fog.id]["delay"]
                         cum_utility += best_utility
-                        log_message(f"[{t:03}] | Stage {stage+1} | Task-{edge.id:02} -> Fog-{best_fog.id:02} | Result: SUCCESS")
+                        if verbose: log_message(f"[{t:03}] | Stage {stage+1} | Task-{edge.id:02} -> Fog-{best_fog.id:02} | Result: SUCCESS")
                         matched = True
                         break 
                     else: # FAILED (Try next stage)
                         edge.fog_metrics[best_fog.id]["failures"] = edge.fog_metrics[best_fog.id].get("failures", 0) + 1
                         edge.fog_metrics[best_fog.id]["last_pi"] = 0.9 * edge.fog_metrics[best_fog.id]["last_pi"]
-                        log_message(f"[{t:03}] | Stage {stage+1} | Task-{edge.id:02} -> Fog-{best_fog.id:02} | Result: REJECTED")
+                        if verbose: log_message(f"[{t:03}] | Stage {stage+1} | Task-{edge.id:02} -> Fog-{best_fog.id:02} | Result: REJECTED")
                         available_fogs.remove(best_fog)
                         
             if not matched:
                 timeslot_rejects += 1
                 timeslot_delay += 100 # Cloud penalty
-                log_message(f"[{t:03}] | Stage - | Task-{edge.id:02} -> CLOUD   | Result: ESCALATED")
+                if verbose: log_message(f"[{t:03}] | Stage - | Task-{edge.id:02} -> CLOUD   | Result: ESCALATED")
                 
         # Distributed Learning Weight Updates
         if policy in ["AC_DL_MATCH", "ORIGINAL_DL_MATCH"] and len(global_db) > 10 and t % 5 == 0:
@@ -124,17 +130,17 @@ def run_simulation(policy, num_slots=100, num_fogs=3, num_edges=10, quality="ave
                 fogs.append(new_fog)
                 for edge in edges:
                     edge.add_fog_profile(new_fog)
-                log_message(f"[!] SCALE OUT at T={t}: Added Fog-{new_fog.id} (Rejection={p_reject*100:.1f}%)")
+                if verbose: log_message(f"[!] SCALE OUT at T={t}: Added Fog-{new_fog.id} (Rejection={p_reject*100:.1f}%)")
                 next_fog_id += 1
             else:
                 util_window.append(sum([f.active_tasks/f.capacity for f in fogs]) / len(fogs))
                 if scale_in(util_window, UTIL_THRESHOLD) and len(fogs) > MIN_FOGS:
                     node_to_remove = min(fogs, key=lambda f: f.active_tasks)
                     fogs.remove(node_to_remove)
-                    log_message(f"[!] SCALE IN at T={t}: Removed Fog-{node_to_remove.id}")
+                    if verbose: log_message(f"[!] SCALE IN at T={t}: Removed Fog-{node_to_remove.id}")
                     util_window.clear()
                     
-    log_message(f"Final Active Fog Nodes: {len(fogs)}")
+    if verbose: log_message(f"Final Active Fog Nodes: {len(fogs)}")
     return metrics
 
 # 3. Execution Execution
@@ -156,7 +162,12 @@ if __name__ == "__main__":
     TOTAL_MC_RUNS = args.run
     sim_slots = 2000 if args.stress else 100
     sim_fogs = 20 if args.stress else 5
-    sim_edges = 150 if args.stress else 15 
+    sim_edges = 150 if args.stress else 15
+    verbose = not args.stress
+
+    # Only create log files for non-stress runs to avoid I/O bottleneck
+    if verbose:
+        init_logging()
 
     if args.tests:
         print(f"\n[INIT] Running Evaluation Suite | Runs: {TOTAL_MC_RUNS} | Slots: {sim_slots} | Quality: {quality} | Stress: {args.stress}")
@@ -166,7 +177,7 @@ if __name__ == "__main__":
         
         for run in range(TOTAL_MC_RUNS):
             print(f"\n{'='*20} STARTING SIMULATION EPOCH {run+1}/{TOTAL_MC_RUNS} {'='*20}")
-            log_message(f"\n{'='*20} STARTING SIMULATION EPOCH {run+1}/{TOTAL_MC_RUNS} {'='*20}")
+            if verbose: log_message(f"\n{'='*20} STARTING SIMULATION EPOCH {run+1}/{TOTAL_MC_RUNS} {'='*20}")
             
             # Lock the initial mathematical topology for all policies within this epoch run
             seed = random.randint(0, 1000000)
@@ -176,7 +187,7 @@ if __name__ == "__main__":
                 random.seed(seed)
                 np.random.seed(seed)
                 
-                run_data = run_simulation(p, sim_slots, sim_fogs, sim_edges, quality) 
+                run_data = run_simulation(p, sim_slots, sim_fogs, sim_edges, quality, verbose=verbose) 
                 
                 # Intermediate calculation to replicate per-run output
                 run_acc = np.mean(run_data['acc_rate']) if run_data['acc_rate'] else 0
@@ -237,8 +248,9 @@ if __name__ == "__main__":
         print(f"{winner_msg:^60}")
         print("=" * 60 + "\n")
         
-        log_message("\n" + "="*40 + "\nFINAL BENCHMARKING RESULTS\n" + "="*40)
-        log_message(winner_msg)
+        if verbose:
+            log_message("\n" + "="*40 + "\nFINAL BENCHMARKING RESULTS\n" + "="*40)
+            log_message(winner_msg)
         
     else:
         print(f"Running core AC_DL_MATCH simulation (Production Mode | Runs: {TOTAL_MC_RUNS} | Quality: {quality} | Stress: {args.stress})...")
@@ -247,6 +259,13 @@ if __name__ == "__main__":
             random.seed(seed)
             np.random.seed(seed)
             reset_drl()
-            run_simulation("AC_DL_MATCH", sim_slots, sim_fogs, sim_edges, quality)
-            
-    print(f"Simulation Execution Concluded. System Logs: '{log_file_path}'")
+            run_simulation("AC_DL_MATCH", sim_slots, sim_fogs, sim_edges, quality, verbose=verbose)
+
+    # Cleanup
+    if _log_file_handle:
+        _log_file_handle.close()
+
+    if log_file_path:
+        print(f"Simulation Execution Concluded. System Logs: '{log_file_path}'")
+    else:
+        print(f"Simulation Execution Concluded. (Stress mode: logging disabled for performance)")

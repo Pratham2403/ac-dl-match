@@ -8,7 +8,7 @@
 **Domain**: Fog Computing, Task Offloading, Infrastructure Elasticity  
 **Implementation**: High-Fidelity Custom Python Benchmarking Suite (PyTorch, Numpy)  
 **Timeline**: Validation & Evaluation Phase  
-**Team**: Pratham Aggarwal (22JE0718), Sumit Manchanda (22JE0990), Swathi Chavan (22JE1006)
+**Team**: Pratham Aggarwal (22JE0718)
 
 ---
 
@@ -580,10 +580,8 @@ This is a research project. Contributions welcome for:
 
 **Authors**:
 - Pratham Aggarwal (22JE0718)
-- Sumit Manchanda (22JE0990)
-- Swathi Chavan (22JE1006)
 
-**Institution**: [Your University Name]  
+**Institution**: Indian Institute of Technology (Indian School of Mines) Dhanbad
 **Advisor**: [Advisor Name]
 
 ---
