@@ -69,13 +69,24 @@ def policy_BLM_TS(available_fogs, edge, current_coeffs):
             best_score, best_fog, best_utility, best_prob = (u * sampled_prob), fog, u, sampled_prob
     return best_fog, best_utility, best_prob
 
-def policy_ORIGINAL_DL_MATCH(available_fogs, edge, current_coeffs):
+def policy_ORIGINAL_DL_MATCH(available_fogs, edge, t, current_coeffs):
     """First-generation DL-MATCH framework"""
+    import math
     best_fog, best_score, best_utility, best_prob = None, -float('inf'), 0, 0
     for fog in available_fogs:
         m = edge.fog_metrics[fog.id]
-        u = get_utility(m["delay"], m["energy"], m["reliability"], fog.cost, edge.weights, 1)
-        p = get_acceptance(u, m["last_pi"], fog.resources_left, 0, current_coeffs)
+        last_time = edge.interaction_history.get(fog.id, -1)
+        time_passed = (t - last_time) if last_time != -1 else 10 
+        
+        # Original Paper's mathematically strict Utility formula: U_ij(t) = D_ij^{-1}(t) - C_ij(t)
+        # Note: No task differentiation, no energy matrices, and no spatial "k-hops"
+        raw_utility = (1.0 / (m["delay"] + 1e-5)) - fog.cost
+        try:
+            u = 1 / (1 + math.exp(-raw_utility))
+        except OverflowError:
+            u = 0 if raw_utility < 0 else 1
+            
+        p = get_acceptance(u, m["last_pi"], fog.resources_left, time_passed, current_coeffs)
         if (u * p) > best_score:
             best_score, best_fog, best_utility, best_prob = (u * p), fog, u, p
     return best_fog, best_utility, best_prob
@@ -200,7 +211,7 @@ def run_policy(policy_name, available_fogs, edge, t, current_coeffs, epsilon):
     elif policy_name == "BLM_TS":
         return policy_BLM_TS(available_fogs, edge, current_coeffs)
     elif policy_name == "ORIGINAL_DL_MATCH":
-        return policy_ORIGINAL_DL_MATCH(available_fogs, edge, current_coeffs)
+        return policy_ORIGINAL_DL_MATCH(available_fogs, edge, t, current_coeffs)
     elif policy_name == "DRL":
         return policy_DRL(available_fogs, edge, t)
     elif policy_name == "META_PSO":

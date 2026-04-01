@@ -6,8 +6,8 @@
 
 **Type**: Research Paper & Simulation Project  
 **Domain**: Fog Computing, Task Offloading, Infrastructure Elasticity  
-**Implementation**: Java-based iFogSim with Python algorithms  
-**Timeline**: ~3 months from formulation to validated results  
+**Implementation**: High-Fidelity Custom Python Benchmarking Suite (PyTorch, Numpy)  
+**Timeline**: Validation & Evaluation Phase  
 **Team**: Pratham Aggarwal (22JE0718), Sumit Manchanda (22JE0990), Swathi Chavan (22JE1006)
 
 ---
@@ -125,25 +125,16 @@ Where:
 
 ---
 
-#### 4️⃣ **Dynamic Multi-Domain Cross-Domain Routing**
+#### 4️⃣ **High Fidelity Simulation Engine**
 
-Tasks intelligently migrate across multiple SDN fog domains based on **expected utility comparison**, not fixed thresholds.
+Fully decouples mathematical convergence (DRL and Meta-Heuristics) using a deterministic Monte-Carlo execution thread. 
+No third-party Java-dependent simulation engines bounding memory allocation limits.
 
-**Decision Logic**:
-```
-IF (Local_Best_Utility < Cross_Domain_Utility × Threshold_Factor):
-    Migrate to Cross-Domain Fog Node
-```
-
-**Innovation**: Enables geographical-scale deployment where tasks can seamlessly move from:
-- City A's fog infrastructure → City B's fog infrastructure
-- Provider X → Provider Y
-
-**Example**: A delivery drone flying from New York to New Jersey switches from NYC fog provider to NJ fog provider without service interruption.
+**Benefit**: Benchmarking operates up to `2000` concurrent tasks generating `300M+` internal utility equations natively in `Python/PyTorch` cleanly integrating GPU inference hooks.
 
 ---
 
-#### 5️⃣ **Distributed Infrastructure Elasticity (Scale-Out/Scale-In)**
+#### 5️⃣ **Distributed Infrastructure Elasticity (Scale-Out)**
 
 **FIRST WORK** to integrate matching algorithm outcomes with infrastructure scaling decisions.
 
@@ -151,18 +142,16 @@ IF (Local_Best_Utility < Cross_Domain_Utility × Threshold_Factor):
 
 Trigger Condition:
 ```
-IF (ρ_reject > θ_reject) AND (ρ_cross < θ_cross):
+IF (ρ_reject > θ_reject):
     Add New Fog Node
 ```
 
 **Meaning**:
 - Too many tasks rejected locally (`ρ_reject > θ_reject`)
-- Cross-domain migration not helping enough (`ρ_cross < θ_cross`)
 - **Action**: Provision new fog node to increase local capacity
 
 **Thresholds** (typical values):
 - `θ_reject` = 15-20% (rejection rate threshold)
-- `θ_cross` = 40-50% (cross-domain success threshold)
 
 ##### **Scale-In Policy** (Remove Fog Nodes)
 
@@ -308,15 +297,15 @@ Higher utility = Better match
 
 ### Implementation Tools
 
-**Simulation Platform**: iFogSim (Java-based fog computing simulator)
-- Models IoT devices, fog nodes, cloud servers
-- Simulates network latency, energy consumption
-- Supports custom task offloading algorithms
+**Simulation Platform**: Custom Python Orchestration Engine
+- Natively models IoT devices, fog nodes, and baseline computations without JVM overhead.
+- Benchmarks DRL (PyTorch) and Meta-Heuristics (PySwarms) internally.
+- Outputs reproducible Plotly HTML/PNG traces iteratively.
 
-**Algorithm Implementation**: Python
-- TFT model training (if using ML for acceptance probability)
-- Utility calculation scripts
-- Infrastructure elasticity policies
+**Algorithm Implementation**: Python 3.10+
+- PyTorch (DQN optimization)
+- Numpy (Mathematical Arrays and Aggregation)
+- Scikit (Distribution tracking)
 
 **Data Collection**:
 - Task arrival patterns (Poisson distribution)

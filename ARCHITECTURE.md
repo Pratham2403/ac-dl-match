@@ -17,47 +17,24 @@ graph TB
         IoTN[Task TM: ...]
     end
     
-    subgraph "Fog Layer (Domain 1)"
+    subgraph "Fog Node Infrastructure"
         F1[Fog Node F1]
         F2[Fog Node F2]
         F3[Fog Node F3]
-        SDN1[SDN Controller S1]
-    end
-    
-    subgraph "Fog Layer (Domain 2)"
-        F4[Fog Node F4]
-        F5[Fog Node F5]
-        F6[Fog Node F6]
-        SDN2[SDN Controller S2]
     end
     
     subgraph "Infrastructure Orchestration"
-        ScaleOut[Scale-Out Manager]
-        ScaleIn[Scale-In Manager]
-        Monitor[Utilization Monitor]
+        ScaleOut[Scale-Out Framework]
+        Monitor[Distributed Learning Node]
     end
     
     IoT1 -->|Utility Calc| F1
-    IoT1 -.->|Cross-Domain| F4
     IoT2 --> F2
     IoT3 --> F3
-    IoTN --> F6
-    
-    F1 --> SDN1
-    F2 --> SDN1
-    F3 --> SDN1
-    
-    F4 --> SDN2
-    F5 --> SDN2
-    F6 --> SDN2
-    
-    SDN1 <-.Multi-Domain Routing.-> SDN2
+    IoTN --> F3
     
     Monitor --> ScaleOut
-    Monitor --> ScaleIn
-    
-    ScaleOut -.Add Node.-> F1
-    ScaleIn -.Remove Node.-> F3
+    ScaleOut -.Spawn Node dynamically.-> F1
 ```
 
 ---
@@ -431,7 +408,7 @@ class SDNController:
 
 **Trigger Condition**:
 ```
-IF (ρ_reject^(t) > θ_reject) AND (ρ_cross^(t) < θ_cross):
+IF (ρ_reject^(t) > θ_reject):
     Add new fog node F_new
 ```
 
@@ -449,25 +426,13 @@ Where:
 - Arrivals_i : Number of task arrivals at time i
 ```
 
-```
-ρ_cross^(t) = (# Cross-Domain Successes in window W) / (# Total Rejections in window W)
-
-Calculation:
-ρ_cross = (Σ_{i=t-W}^{t} CrossDomain_Success_i) / (Σ_{i=t-W}^{t} Rejected_i)
-
-Where:
-- CrossDomain_Success_i : Tasks successfully migrated to other domains at time i
-```
-
 **Interpretation**:
 - High `ρ_reject` → Many tasks failing locally
-- Low `ρ_cross` → Cross-domain migration not helping
 - **Action**: Need more local capacity → Add fog node
 
 **Typical Thresholds**:
 ```
 θ_reject = 0.15 to 0.20 (15-20% rejection rate)
-θ_cross = 0.40 to 0.50 (40-50% cross-domain success rate)
 ```
 
 ---

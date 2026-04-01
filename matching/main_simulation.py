@@ -108,7 +108,7 @@ def run_simulation(policy, num_slots=100, num_fogs=3, num_edges=10, quality="ave
                 log_message(f"[{t:03}] | Stage - | Task-{edge.id:02} -> CLOUD   | Result: ESCALATED")
                 
         # Distributed Learning Weight Updates
-        if policy == "AC_DL_MATCH" and len(global_db) > 10 and t % 5 == 0:
+        if policy in ["AC_DL_MATCH", "ORIGINAL_DL_MATCH"] and len(global_db) > 10 and t % 5 == 0:
             current_coeffs = learn_from_history(global_db)
             
         # Infrastructure Elasticity
