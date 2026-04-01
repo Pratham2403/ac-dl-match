@@ -64,7 +64,7 @@ def run_simulation(policy, num_slots=100, num_fogs=3, num_edges=10, quality="ave
             fog.update_state()
             
         timeslot_requests, timeslot_rejects, timeslot_delay = 0, 0, 0
-        epsilon = 1.0 / (t ** 0.6) if policy == "AC_DL_MATCH" else 0
+        epsilon = 1.0 / (t ** 0.6) if policy in ["AC_DL_MATCH", "ORIGINAL_DL_MATCH"] else 0
         
         for edge in edges:
             matched = False
@@ -170,7 +170,7 @@ if __name__ == "__main__":
     if args.tests:
         print(f"\n[INIT] Running Evaluation Suite | Runs: {TOTAL_MC_RUNS} | Slots: {sim_slots} | Quality: {quality} | Stress: {args.stress}")
         
-        policies = ["RANDOM", "GREEDY", "BLM_TS", "DRL", "META_PSO", "ORIGINAL_DL_MATCH", "AC_DL_MATCH"]
+        policies = ["RANDOM", "GREEDY", "BLM_TS", "MV_UCB", "DRL", "META_PSO", "ORIGINAL_DL_MATCH", "AC_DL_MATCH"]
         averaged_metrics = {p: {"acc_rate": np.zeros(sim_slots), "delay": np.zeros(sim_slots), "utility": np.zeros(sim_slots), "time": list(range(1, sim_slots + 1))} for p in policies}
         
         for run in range(TOTAL_MC_RUNS):

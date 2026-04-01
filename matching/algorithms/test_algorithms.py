@@ -69,9 +69,19 @@ def policy_BLM_TS(available_fogs, edge, current_coeffs):
             best_score, best_fog, best_utility, best_prob = (u * sampled_prob), fog, u, sampled_prob
     return best_fog, best_utility, best_prob
 
-def policy_ORIGINAL_DL_MATCH(available_fogs, edge, t, current_coeffs):
+def policy_ORIGINAL_DL_MATCH(available_fogs, edge, t, current_coeffs, epsilon):
     """First-generation DL-MATCH framework"""
     import math
+    if random.random() < epsilon:
+        best_fog = random.choice(available_fogs)
+        m = edge.fog_metrics[best_fog.id]
+        raw_utility = (1.0 / (m["delay"] + 1e-5)) - best_fog.cost
+        try:
+            u = 1 / (1 + math.exp(-raw_utility))
+        except OverflowError:
+            u = 0 if raw_utility < 0 else 1
+        return best_fog, u, 0.5
+        
     best_fog, best_score, best_utility, best_prob = None, -float('inf'), 0, 0
     for fog in available_fogs:
         m = edge.fog_metrics[fog.id]
@@ -202,6 +212,30 @@ def policy_AC_DL_MATCH(available_fogs, edge, t, current_coeffs, epsilon):
             
     return best_fog, best_utility, best_prob
 
+def policy_MV_UCB(available_fogs, edge, t):
+    """Multi-Variable Upper Confidence Bound (MV-UCB) Baseline"""
+    import math
+    best_fog, best_score, best_utility, best_prob = None, -float('inf'), 0, 0
+    C = 1.5 # Standard UCB exploration parameter
+    
+    for fog in available_fogs:
+        m = edge.fog_metrics[fog.id]
+        u = get_utility(m["delay"], m["energy"], m["reliability"], fog.cost, edge.weights, 1.0)
+        
+        n_pulls = m.get("successes", 0) + m.get("failures", 0)
+        if n_pulls == 0:
+            ucb_bonus = float('inf')
+            empirical_reward = u
+        else:
+            empirical_reward = u * (m.get("successes", 0) / n_pulls)
+            ucb_bonus = C * math.sqrt(math.log(t) / n_pulls)
+            
+        score = empirical_reward + ucb_bonus
+        if score > best_score:
+            best_score, best_fog, best_utility, best_prob = score, fog, u, 1.0
+            
+    return best_fog, best_utility, best_prob
+
 def run_policy(policy_name, available_fogs, edge, t, current_coeffs, epsilon):
     """Router function to evaluate the explicitly decoupled algorithms"""
     if policy_name == "RANDOM":
@@ -210,8 +244,10 @@ def run_policy(policy_name, available_fogs, edge, t, current_coeffs, epsilon):
         return policy_GREEDY(available_fogs, edge)
     elif policy_name == "BLM_TS":
         return policy_BLM_TS(available_fogs, edge, current_coeffs)
+    elif policy_name == "MV_UCB":
+        return policy_MV_UCB(available_fogs, edge, t)
     elif policy_name == "ORIGINAL_DL_MATCH":
-        return policy_ORIGINAL_DL_MATCH(available_fogs, edge, t, current_coeffs)
+        return policy_ORIGINAL_DL_MATCH(available_fogs, edge, t, current_coeffs, epsilon)
     elif policy_name == "DRL":
         return policy_DRL(available_fogs, edge, t)
     elif policy_name == "META_PSO":
