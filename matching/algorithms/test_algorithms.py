@@ -1,6 +1,36 @@
 import random
+import torch
+import torch.nn as nn
+import torch.optim as optim
 from algorithms.get_utility import get_utility
 from algorithms.get_acceptance import get_acceptance
+
+# Automatically detect available GPU device for PyTorch
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+class DQN(nn.Module):
+    def __init__(self, state_size, num_fogs):
+        super(DQN, self).__init__()
+        self.fc1 = nn.Linear(state_size, 24)
+        self.fc2 = nn.Linear(24, 24)
+        self.out = nn.Linear(24, num_fogs)
+
+    def forward(self, x):
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        return self.out(x)
+
+_drl_agent = None
+_drl_optimizer = None
+_last_state = None
+_last_action = None
+
+def reset_drl():
+    global _drl_agent, _drl_optimizer, _last_state, _last_action
+    _drl_agent = None
+    _drl_optimizer = None
+    _last_state = None
+    _last_action = None
 
 def policy_RANDOM(available_fogs, edge):
     """Ethical Random Benchmark that strictly logs apples-to-apples utility"""
@@ -21,14 +51,19 @@ def policy_GREEDY(available_fogs, edge):
     return best_fog, best_utility, best_prob
 
 def policy_BLM_TS(available_fogs, edge, current_coeffs):
-    """Baseline matching prediction lacking spatial/temporal decay awareness"""
+    """Corrected Thompson Sampling (Beta Distribution) Baseline"""
     best_fog, best_score, best_utility, best_prob = None, -float('inf'), 0, 0
     for fog in available_fogs:
         m = edge.fog_metrics[fog.id]
         u = get_utility(m["delay"], m["energy"], m["reliability"], fog.cost, edge.weights, 1)
-        p = get_acceptance(u, m["last_pi"], fog.resources_left, 0, current_coeffs)
-        if (u * p) > best_score:
-            best_score, best_fog, best_utility, best_prob = (u * p), fog, u, p
+        
+        # True Thompson Sampling: Sample from Beta(successes + 1, failures + 1)
+        alpha_ts = m.get("successes", 0) + 1
+        beta_ts = m.get("failures", 0) + 1
+        sampled_prob = random.betavariate(alpha_ts, beta_ts)
+        
+        if (u * sampled_prob) > best_score:
+            best_score, best_fog, best_utility, best_prob = (u * sampled_prob), fog, u, sampled_prob
     return best_fog, best_utility, best_prob
 
 def policy_ORIGINAL_DL_MATCH(available_fogs, edge, current_coeffs):
@@ -41,6 +76,57 @@ def policy_ORIGINAL_DL_MATCH(available_fogs, edge, current_coeffs):
         if (u * p) > best_score:
             best_score, best_fog, best_utility, best_prob = (u * p), fog, u, p
     return best_fog, best_utility, best_prob
+
+def policy_DRL(available_fogs, edge, t):
+    """Deep Q-Network Baseline for Research Comparison"""
+    global _drl_agent, _drl_optimizer, _last_state, _last_action
+    
+    state_size = 3 * len(available_fogs)
+    
+    if _drl_agent is None or _drl_agent.out.out_features != len(available_fogs):
+        _drl_agent = DQN(state_size, len(available_fogs)).to(device)
+        _drl_optimizer = optim.Adam(_drl_agent.parameters(), lr=0.01)
+        
+    epsilon_drl = max(0.1, 1.0 - (t / 50.0))
+    
+    current_state = []
+    for fog in available_fogs:
+        m = edge.fog_metrics[fog.id]
+        current_state.extend([m["delay"], m["energy"], fog.cost])
+        
+    state_tensor = torch.FloatTensor(current_state).to(device)
+    _last_state = state_tensor
+    
+    if random.random() < epsilon_drl:
+        action_idx = random.randint(0, len(available_fogs)-1)
+    else:
+        with torch.no_grad():
+            q_values = _drl_agent(state_tensor)
+            action_idx = torch.argmax(q_values).item()
+            
+    _last_action = action_idx
+    best_fog = available_fogs[action_idx]
+    
+    m = edge.fog_metrics[best_fog.id]
+    best_utility = get_utility(m["delay"], m["energy"], m["reliability"], best_fog.cost, edge.weights, 1)
+    
+    return best_fog, best_utility, 1.0
+
+def train_DRL(outcome, best_utility):
+    global _drl_agent, _drl_optimizer, _last_state, _last_action
+    if _drl_agent is None or _last_state is None:
+        return
+        
+    reward = best_utility if outcome == 1 else -1.0
+    
+    q_values = _drl_agent(_last_state)
+    target_q_values = q_values.clone()
+    target_q_values[_last_action] = reward
+    
+    loss = nn.MSELoss()(q_values, target_q_values)
+    _drl_optimizer.zero_grad()
+    loss.backward()
+    _drl_optimizer.step()
 
 def policy_AC_DL_MATCH(available_fogs, edge, t, current_coeffs, epsilon):
     """Novel Architecture: k-Hop spatial awareness + Temporal Decay + Epsilon Exploration"""
@@ -75,6 +161,8 @@ def run_policy(policy_name, available_fogs, edge, t, current_coeffs, epsilon):
         return policy_BLM_TS(available_fogs, edge, current_coeffs)
     elif policy_name == "ORIGINAL_DL_MATCH":
         return policy_ORIGINAL_DL_MATCH(available_fogs, edge, current_coeffs)
+    elif policy_name == "DRL":
+        return policy_DRL(available_fogs, edge, t)
     elif policy_name == "AC_DL_MATCH":
         return policy_AC_DL_MATCH(available_fogs, edge, t, current_coeffs, epsilon)
     else:

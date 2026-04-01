@@ -15,5 +15,7 @@ class EdgeNode:
             "energy": random.uniform(5, 20),
             "reliability": random.uniform(0.8, 0.99),
             "last_pi": 0.5,
+            "successes": 0,
+            "failures": 0,
             "hops": random.randint(1, 3)
         }

@@ -123,8 +123,28 @@ class BenchmarkPlotter:
         self._apply_ieee_layout(fig, "Cumulative System Utility Score", "Time Slots", "Utility Score")
         self._save_figure(fig, "cumulative_utility")
 
+    def plot_delay_cdf(self):
+        import numpy as np
+        fig = go.Figure()
+        for policy, data in self.metrics.items():
+            # Calculate CDF of delay across all timeslots
+            sorted_delays = np.sort(data["delay"])
+            cdf = np.arange(1, len(sorted_delays) + 1) / len(sorted_delays)
+            
+            fig.add_trace(go.Scatter(
+                x=sorted_delays, 
+                y=cdf,
+                mode="lines",
+                name=policy,
+                line=dict(color=self.colors.get(policy, "#000000"), width=2.5)
+            ))
+            
+        self._apply_ieee_layout(fig, "Cumulative Distribution Function (CDF) of Offloading Delay", "Offloading Delay (ms)", "Cumulative Probability")
+        self._save_figure(fig, "offloading_delay_cdf")
+
     def generate_all_plots(self):
         """Generates all standard benchmarking visualizations."""
         self.plot_acceptance_rate()
         self.plot_average_delay()
         self.plot_cumulative_utility()
+        self.plot_delay_cdf()

@@ -15,7 +15,7 @@ from algorithms.get_acceptance import get_acceptance
 from algorithms.learn_from_history import learn_from_history
 from algorithms.scale_out import scale_out
 from algorithms.scale_in import scale_in
-from algorithms.test_algorithms import run_policy
+from algorithms.test_algorithms import run_policy, train_DRL, reset_drl
 
 # Import Entities
 from entities.fog_node import FogNode
@@ -32,6 +32,7 @@ def log_message(msg):
 
 # 2. Main Simulation Loop
 def run_simulation(policy, num_slots=100):
+    reset_drl()
     log_message(f"\n{'='*20} STARTING POLICY: {policy} {'='*20}")
     
     K_MAX_RETRIES = 3
@@ -74,13 +75,17 @@ def run_simulation(policy, num_slots=100):
                 # Evaluation
                 if best_fog:
                     timeslot_requests += 1
-                    outcome = best_fog.simulate_real_outcome()
+                    outcome = best_fog.simulate_real_outcome(edge.fog_metrics[best_fog.id]["reliability"])
                     
                     if policy in ["AC_DL_MATCH", "ORIGINAL_DL_MATCH"]:
                         edge.interaction_history[best_fog.id] = t
                         global_db.append([[best_utility, edge.fog_metrics[best_fog.id]["last_pi"], best_fog.resources_left], outcome])
+                        
+                    if policy == "DRL":
+                        train_DRL(outcome, best_utility)
                     
                     if outcome == 1: # SUCCESS
+                        edge.fog_metrics[best_fog.id]["successes"] = edge.fog_metrics[best_fog.id].get("successes", 0) + 1
                         best_fog.active_tasks += 1
                         best_fog.resources_left = max(0.0, best_fog.resources_left - (1/best_fog.capacity))
                         edge.fog_metrics[best_fog.id]["last_pi"] = 0.9 * edge.fog_metrics[best_fog.id]["last_pi"] + 0.1 * 1.0
@@ -90,6 +95,7 @@ def run_simulation(policy, num_slots=100):
                         matched = True
                         break 
                     else: # FAILED (Try next stage)
+                        edge.fog_metrics[best_fog.id]["failures"] = edge.fog_metrics[best_fog.id].get("failures", 0) + 1
                         edge.fog_metrics[best_fog.id]["last_pi"] = 0.9 * edge.fog_metrics[best_fog.id]["last_pi"]
                         log_message(f"[{t:03}] | Stage {stage+1} | Task-{edge.id:02} -> Fog-{best_fog.id:02} | Result: REJECTED")
                         available_fogs.remove(best_fog)
@@ -120,7 +126,7 @@ def run_simulation(policy, num_slots=100):
                 next_fog_id += 1
             else:
                 util_window.append(sum([f.active_tasks/f.capacity for f in fogs]) / len(fogs))
-                if len(util_window) == 5 and sum(util_window)/5 < UTIL_THRESHOLD and len(fogs) > MIN_FOGS:
+                if scale_in(util_window, UTIL_THRESHOLD) and len(fogs) > MIN_FOGS:
                     node_to_remove = min(fogs, key=lambda f: f.active_tasks)
                     fogs.remove(node_to_remove)
                     log_message(f"[!] SCALE IN at T={t}: Removed Fog-{node_to_remove.id}")
@@ -139,7 +145,7 @@ if __name__ == "__main__":
 
     if args.tests:
         print("Running full benchmarking suite across all algorithms (Testing Mode)...")
-        policies = ["RANDOM", "GREEDY", "BLM_TS", "ORIGINAL_DL_MATCH", "AC_DL_MATCH"]
+        policies = ["RANDOM", "GREEDY", "BLM_TS", "DRL", "ORIGINAL_DL_MATCH", "AC_DL_MATCH"]
         all_metrics = {p: run_simulation(p, 100) for p in policies}
         
         try:
@@ -150,30 +156,55 @@ if __name__ == "__main__":
         except ImportError as e:
             print(f"Warning: Could not initiate plotting tools. Ensure 'plotly' and 'kaleido' are installed. Error: {e}")
             
-        # Determine Winner
-        print("\n" + "="*40)
-        print("FINAL BENCHMARKING RESULTS")
-        print("="*40)
+        # ==========================================
+        # MULTI-METRIC EVALUATION (IEEE STANDARD)
+        # ==========================================
+        print("\n" + "="*60)
+        print(f"{'FINAL BENCHMARKING RESULTS':^60}")
+        print("="*60)
         
-        best_policy = None
-        best_utility = -float('inf')
+        best_composite = -float('inf')
+        overall_winner = None
+        
+        # Track winners per category
+        category_winners = {
+            "Acc Rate": {"val": -1, "policy": ""},
+            "Delay": {"val": float('inf'), "policy": ""},
+            "Utility": {"val": -1, "policy": ""}
+        }
         
         for p, m in all_metrics.items():
             avg_acc = sum(m['acc_rate']) / len(m['acc_rate']) if m['acc_rate'] else 0
-            avg_del = sum(m['delay']) / len(m['delay']) if m['delay'] else 0
+            avg_del = sum(m['delay']) / len(m['delay']) if m['delay'] else 1e-5
             final_util = m['utility'][-1] if m['utility'] else 0
             
-            print(f"Algorithm: {p:<20} | Utility: {final_util:^8.2f} | Acc Rate: {avg_acc*100:>5.1f}% | Avg Delay: {avg_del:>6.2f}ms")
+            # Composite Score: (Reliability * Efficiency) / Latency
+            composite_score = (avg_acc * final_util) / avg_del
             
-            if final_util > best_utility:
-                best_utility = final_util
-                best_policy = p
+            print(f"[{p:<17}] | Util: {final_util:<7.2f} | Acc: {avg_acc*100:<5.1f}% | Delay: {avg_del:<6.2f}ms | Score: {composite_score:.2f}")
+            
+            # Update Category Winners
+            if avg_acc > category_winners["Acc Rate"]["val"]:
+                category_winners["Acc Rate"] = {"val": avg_acc, "policy": p}
+            if avg_del < category_winners["Delay"]["val"]:
+                category_winners["Delay"] = {"val": avg_del, "policy": p}
+            if final_util > category_winners["Utility"]["val"]:
+                category_winners["Utility"] = {"val": final_util, "policy": p}
                 
-        winner_msg = f"\n>>> OVERALL WINNER: {best_policy} (Utility: {best_utility:.2f}) <<<"
-        print(winner_msg)
-        print("="*40 + "\n")
+            # Update Overall Winner
+            if composite_score > best_composite:
+                best_composite = composite_score
+                overall_winner = p
+
+        print("-" * 60)
+        print(f"🏆 Highest Acceptance Rate : {category_winners['Acc Rate']['policy']} ({category_winners['Acc Rate']['val']*100:.1f}%)")
+        print(f"🏆 Lowest Average Delay    : {category_winners['Delay']['policy']} ({category_winners['Delay']['val']:.2f}ms)")
+        print(f"🏆 Highest Total Utility   : {category_winners['Utility']['policy']} ({category_winners['Utility']['val']:.2f})")
+        print("=" * 60)
+        winner_msg = f"🌟 OVERALL COMPOSITE WINNER: {overall_winner} 🌟"
+        print(f"{winner_msg:^60}")
+        print("=" * 60 + "\n")
         
-        # Log it as well
         log_message("\n" + "="*40 + "\nFINAL BENCHMARKING RESULTS\n" + "="*40)
         log_message(winner_msg)
             
