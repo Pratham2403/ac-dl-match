@@ -84,7 +84,7 @@ def policy_DRL(available_fogs, edge, t):
     """Deep Q-Network Baseline for Research Comparison"""
     global _drl_agent, _drl_optimizer, _last_state, _last_action
     
-    state_size = 3 * len(available_fogs)
+    state_size = 4 * len(available_fogs)
     
     if _drl_agent is None or _drl_agent.out.out_features != len(available_fogs):
         _drl_agent = DQN(state_size, len(available_fogs)).to(device)
@@ -95,7 +95,7 @@ def policy_DRL(available_fogs, edge, t):
     current_state = []
     for fog in available_fogs:
         m = edge.fog_metrics[fog.id]
-        current_state.extend([m["delay"], m["energy"], fog.cost])
+        current_state.extend([m["delay"], m["energy"], fog.cost, m["reliability"]])
         
     state_tensor = torch.FloatTensor(current_state).to(device)
     _last_state = state_tensor
