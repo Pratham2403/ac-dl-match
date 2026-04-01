@@ -1,4 +1,5 @@
 import random
+import math
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -71,7 +72,6 @@ def policy_BLM_TS(available_fogs, edge, current_coeffs):
 
 def policy_ORIGINAL_DL_MATCH(available_fogs, edge, t, current_coeffs, epsilon):
     """First-generation DL-MATCH framework"""
-    import math
     if random.random() < epsilon:
         best_fog = random.choice(available_fogs)
         m = edge.fog_metrics[best_fog.id]
@@ -214,7 +214,6 @@ def policy_AC_DL_MATCH(available_fogs, edge, t, current_coeffs, epsilon):
 
 def policy_MV_UCB(available_fogs, edge, t):
     """Multi-Variable Upper Confidence Bound (MV-UCB) Baseline"""
-    import math
     best_fog, best_score, best_utility, best_prob = None, -float('inf'), 0, 0
     C = 1.5 # Standard UCB exploration parameter
     

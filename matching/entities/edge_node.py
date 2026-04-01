@@ -23,6 +23,9 @@ class EdgeNode:
             delay = random.uniform(5, 50)
             energy = random.uniform(5, 20)
             reliability = random.uniform(0.8, 0.99)
+            
+        # The Edge generates real-world broadcast distances
+        hops = random.randint(1, 4)
 
         self.fog_metrics[fog.id] = {
             "delay": delay,
@@ -31,5 +34,5 @@ class EdgeNode:
             "last_pi": 0.5,
             "successes": 0,
             "failures": 0,
-            "hops": random.randint(1, 3)
+            "hops": hops
         }

@@ -6,8 +6,7 @@
 
 **Type**: Research Paper & Simulation Project  
 **Domain**: Fog Computing, Task Offloading, Infrastructure Elasticity  
-**Implementation**: High-Fidelity Custom Python Benchmarking Suite (PyTorch, Numpy)  
-**Timeline**: Validation & Evaluation Phase  
+**Implementation**: Python Benchmarking Suite (PyTorch, Numpy)  
 **Team**: Pratham Aggarwal (22JE0718)
 
 ---
@@ -505,7 +504,7 @@ Compare AC-DL-MATCH against:
 - **Challenge**: Security overhead impacts latency
 
 **3. No Real-World Deployment/Testing**
-- **Current**: Pure simulation (iFogSim)
+- **Current**: Pure simulation (Python/Plotly)
 - **Future**: Deploy on real Raspberry Pi + ESP32 testbed
 - **Challenge**: Hardware constraints, network unpredictability
 

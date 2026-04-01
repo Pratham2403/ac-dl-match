@@ -1,4 +1,5 @@
 import os
+import time
 import random
 import argparse
 import numpy as np
@@ -12,6 +13,7 @@ warnings.filterwarnings('ignore')
 pio.templates.default = "plotly_white"
 
 # Import Algorithms
+from utils.plotter import BenchmarkPlotter
 from algorithms.get_utility import get_utility
 from algorithms.get_acceptance import get_acceptance
 from algorithms.learn_from_history import learn_from_history
@@ -44,6 +46,7 @@ def run_simulation(policy, num_slots=100, num_fogs=3, num_edges=10, quality="ave
     log_message(f"\n{'='*20} STARTING POLICY: {policy} {'='*20}")
     
     K_MAX_RETRIES = 3
+    K_MAX_HOPS = 3
     MIN_FOGS = num_fogs
     REJECT_THRESHOLD = 0.4
     UTIL_THRESHOLD = 0.2
@@ -51,7 +54,8 @@ def run_simulation(policy, num_slots=100, num_fogs=3, num_edges=10, quality="ave
     fogs = [FogNode(i, quality=quality) for i in range(MIN_FOGS)]
     edges = [EdgeNode(i, [random.randint(1,10) for _ in range(4)], fogs, quality=quality) for i in range(num_edges)]
     
-    global_db = []
+    # Memory Optimization: Bound the distributed learning history to prevent OOM
+    global_db = deque(maxlen=5000)
     current_coeffs = [1.0, 1.0, 1.0]
     next_fog_id = MIN_FOGS
     
@@ -68,7 +72,9 @@ def run_simulation(policy, num_slots=100, num_fogs=3, num_edges=10, quality="ave
         
         for edge in edges:
             matched = False
-            available_fogs = list(fogs)
+            
+            # Strategy C Filter: Maintain routing tables for network mobility, but enforce hard hop limit
+            available_fogs = [f for f in fogs if edge.fog_metrics[f.id]["hops"] <= K_MAX_HOPS]
             
             # K_MAX Retry Loop
             for stage in range(K_MAX_RETRIES):
@@ -105,6 +111,10 @@ def run_simulation(policy, num_slots=100, num_fogs=3, num_edges=10, quality="ave
                     else: # FAILED (Try next stage)
                         edge.fog_metrics[best_fog.id]["failures"] = edge.fog_metrics[best_fog.id].get("failures", 0) + 1
                         edge.fog_metrics[best_fog.id]["last_pi"] = 0.9 * edge.fog_metrics[best_fog.id]["last_pi"]
+                        
+                        # DEVIL FIXED: Introduce negotiation latency for rejected probes
+                        timeslot_delay += (edge.fog_metrics[best_fog.id]["delay"] * 0.1) # 10% round-trip penalty
+                        
                         log_message(f"[{t:03}] | Stage {stage+1} | Task-{edge.id:02} -> Fog-{best_fog.id:02} | Result: REJECTED")
                         available_fogs.remove(best_fog)
                         
@@ -185,14 +195,17 @@ if __name__ == "__main__":
                 random.seed(seed)
                 np.random.seed(seed)
                 
+                # Execution Time Tracking
+                start_time = time.perf_counter()
                 run_data = run_simulation(p, sim_slots, sim_fogs, sim_edges, quality) 
+                exec_time = time.perf_counter() - start_time
                 
                 # Intermediate calculation to replicate per-run output
                 run_acc = np.mean(run_data['acc_rate']) if run_data['acc_rate'] else 0
                 run_del = np.mean(run_data['delay']) if run_data['delay'] else 1e-5
                 run_util = run_data['utility'][-1] if run_data['utility'] else 0
                 run_score = (run_acc * run_util) / run_del if run_del > 0 else 0
-                print(f"[{p:<17}] | Util: {run_util:<7.2f} | Acc: {run_acc*100:<5.1f}% | Delay: {run_del:<6.2f}ms | Score: {run_score:.2f}")
+                print(f"[{p:<17}] | Exec: {exec_time:>5.2f}s | Util: {run_util:<7.2f} | Acc: {run_acc*100:<5.1f}% | Delay: {run_del:<6.2f}ms | Score: {run_score:.2f}")
                 
                 averaged_metrics[p]["acc_rate"] += np.array(run_data["acc_rate"])
                 averaged_metrics[p]["delay"] += np.array(run_data["delay"])
@@ -204,7 +217,6 @@ if __name__ == "__main__":
             averaged_metrics[p]["utility"] /= TOTAL_MC_RUNS
 
         try:
-            from utils.plotter import BenchmarkPlotter
             plotter = BenchmarkPlotter(averaged_metrics, timestamp)
             plotter.generate_all_plots()
             print("\n[SUCCESS] Benchmarking complete. Visualizations exported.")
