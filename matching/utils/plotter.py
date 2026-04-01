@@ -15,7 +15,7 @@ class BenchmarkPlotter:
     def __init__(self, metrics_data, timestamp):
         self.metrics = metrics_data
         self.timestamp = timestamp
-        self.results_dir = "results"
+        self.results_dir = f"results/result_{self.timestamp}"
         
         os.makedirs(self.results_dir, exist_ok=True)
         pio.templates.default = "plotly_white"
@@ -42,7 +42,7 @@ class BenchmarkPlotter:
 
     def _save_figure(self, fig, filename):
         """Helper to save interactive HTML and static images."""
-        base_path = os.path.join(self.results_dir, f"{filename}_{self.timestamp}")
+        base_path = os.path.join(self.results_dir, filename)
         
         # Save Interactive HTML
         html_path = f"{base_path}.html"

@@ -1,5 +1,7 @@
 import os
 import random
+import argparse
+import numpy as np
 from collections import deque
 from datetime import datetime
 import plotly.graph_objects as go
@@ -31,17 +33,17 @@ def log_message(msg):
         f.write(msg + "\n")
 
 # 2. Main Simulation Loop
-def run_simulation(policy, num_slots=100):
+def run_simulation(policy, num_slots=100, num_fogs=3, num_edges=10, quality="average"):
     reset_drl()
     log_message(f"\n{'='*20} STARTING POLICY: {policy} {'='*20}")
     
     K_MAX_RETRIES = 3
-    MIN_FOGS = 3
+    MIN_FOGS = num_fogs
     REJECT_THRESHOLD = 0.4
     UTIL_THRESHOLD = 0.2
     
-    fogs = [FogNode(i) for i in range(MIN_FOGS)]
-    edges = [EdgeNode(i, [random.randint(1,10) for _ in range(4)], fogs) for i in range(10)]
+    fogs = [FogNode(i, quality=quality) for i in range(MIN_FOGS)]
+    edges = [EdgeNode(i, [random.randint(1,10) for _ in range(4)], fogs, quality=quality) for i in range(num_edges)]
     
     global_db = []
     current_coeffs = [1.0, 1.0, 1.0]
@@ -118,7 +120,7 @@ def run_simulation(policy, num_slots=100):
         
         if policy == "AC_DL_MATCH":
             if scale_out(p_reject, REJECT_THRESHOLD):
-                new_fog = FogNode(next_fog_id)
+                new_fog = FogNode(next_fog_id, quality=quality)
                 fogs.append(new_fog)
                 for edge in edges:
                     edge.add_fog_profile(new_fog)
@@ -137,64 +139,94 @@ def run_simulation(policy, num_slots=100):
 
 # 3. Execution Execution
 if __name__ == "__main__":
-    import argparse
     
     parser = argparse.ArgumentParser(description="AC-DL Match Architecture Simulator")
-    parser.add_argument("--tests", action="store_true", help="Run full benchmarking suite and plot results.")
+    parser.add_argument("--tests", action="store_true", help="Run full benchmarking suite.")
+    parser.add_argument("--best", action="store_true", help="Simulate highly resourceful systems.")
+    parser.add_argument("--worst", action="store_true", help="Simulate tight resource constraints.")
+    parser.add_argument("--average", action="store_true", help="Simulate standard baseline constraints (Default).")
+    parser.add_argument("--stress", action="store_true", help="Scale up devices and slots massively.")
+    parser.add_argument("--run", type=int, default=1, help="Number of evaluation runs to average.")
     args = parser.parse_args()
 
+    quality = "average"
+    if args.best: quality = "best"
+    elif args.worst: quality = "worst"
+
+    TOTAL_MC_RUNS = args.run
+    sim_slots = 2000 if args.stress else 100
+    sim_fogs = 20 if args.stress else 5
+    sim_edges = 150 if args.stress else 15 
+
     if args.tests:
-        print("Running full benchmarking suite across all algorithms (Testing Mode)...")
-        policies = ["RANDOM", "GREEDY", "BLM_TS", "DRL", "META_PSO", "ORIGINAL_DL_MATCH", "AC_DL_MATCH"]
-        all_metrics = {p: run_simulation(p, 100) for p in policies}
+        print(f"\n[INIT] Running Evaluation Suite | Runs: {TOTAL_MC_RUNS} | Slots: {sim_slots} | Quality: {quality} | Stress: {args.stress}")
         
+        policies = ["RANDOM", "GREEDY", "BLM_TS", "DRL", "META_PSO", "ORIGINAL_DL_MATCH", "AC_DL_MATCH"]
+        averaged_metrics = {p: {"acc_rate": np.zeros(sim_slots), "delay": np.zeros(sim_slots), "utility": np.zeros(sim_slots), "time": list(range(1, sim_slots + 1))} for p in policies}
+        
+        for run in range(TOTAL_MC_RUNS):
+            print(f"\n{'='*20} STARTING SIMULATION EPOCH {run+1}/{TOTAL_MC_RUNS} {'='*20}")
+            log_message(f"\n{'='*20} STARTING SIMULATION EPOCH {run+1}/{TOTAL_MC_RUNS} {'='*20}")
+            
+            # Lock the initial mathematical topology for all policies within this epoch run
+            seed = random.randint(0, 1000000)
+            
+            for p in policies:
+                reset_drl()
+                random.seed(seed)
+                np.random.seed(seed)
+                
+                run_data = run_simulation(p, sim_slots, sim_fogs, sim_edges, quality) 
+                
+                # Intermediate calculation to replicate per-run output
+                run_acc = np.mean(run_data['acc_rate']) if run_data['acc_rate'] else 0
+                run_del = np.mean(run_data['delay']) if run_data['delay'] else 1e-5
+                run_util = run_data['utility'][-1] if run_data['utility'] else 0
+                run_score = (run_acc * run_util) / run_del if run_del > 0 else 0
+                print(f"[{p:<17}] | Util: {run_util:<7.2f} | Acc: {run_acc*100:<5.1f}% | Delay: {run_del:<6.2f}ms | Score: {run_score:.2f}")
+                
+                averaged_metrics[p]["acc_rate"] += np.array(run_data["acc_rate"])
+                averaged_metrics[p]["delay"] += np.array(run_data["delay"])
+                averaged_metrics[p]["utility"] += np.array(run_data["utility"])
+
+        for p in policies:
+            averaged_metrics[p]["acc_rate"] /= TOTAL_MC_RUNS
+            averaged_metrics[p]["delay"] /= TOTAL_MC_RUNS
+            averaged_metrics[p]["utility"] /= TOTAL_MC_RUNS
+
         try:
             from utils.plotter import BenchmarkPlotter
-            plotter = BenchmarkPlotter(all_metrics, timestamp)
+            plotter = BenchmarkPlotter(averaged_metrics, timestamp)
             plotter.generate_all_plots()
-            print("Benchmarking complete. Visualizations exported to 'results/' directory.")
-        except ImportError as e:
-            print(f"Warning: Could not initiate plotting tools. Ensure 'plotly' and 'kaleido' are installed. Error: {e}")
+            print("\n[SUCCESS] Benchmarking complete. Visualizations exported.")
+        except Exception as e:
+            print(f"\n[WARNING] Plotting tools failed to load. Error: {e}")
             
-        # ==========================================
-        # MULTI-METRIC EVALUATION (IEEE STANDARD)
-        # ==========================================
         print("\n" + "="*60)
-        print(f"{'FINAL BENCHMARKING RESULTS':^60}")
+        print(f"{'FINAL BENCHMARKING RESULTS (AVERAGED OVER '+str(TOTAL_MC_RUNS)+' RUNS)':^60}")
         print("="*60)
         
         best_composite = -float('inf')
         overall_winner = None
-        
-        # Track winners per category
         category_winners = {
             "Acc Rate": {"val": -1, "policy": ""},
             "Delay": {"val": float('inf'), "policy": ""},
             "Utility": {"val": -1, "policy": ""}
         }
         
-        for p, m in all_metrics.items():
-            avg_acc = sum(m['acc_rate']) / len(m['acc_rate']) if m['acc_rate'] else 0
-            avg_del = sum(m['delay']) / len(m['delay']) if m['delay'] else 1e-5
-            final_util = m['utility'][-1] if m['utility'] else 0
+        for p, m in averaged_metrics.items():
+            avg_acc = np.mean(m['acc_rate'])
+            avg_del = np.mean(m['delay'])
+            final_util = m['utility'][-1] 
             
-            # Composite Score: (Reliability * Efficiency) / Latency
-            composite_score = (avg_acc * final_util) / avg_del
+            composite_score = (avg_acc * final_util) / avg_del if avg_del > 0 else 0
             
             print(f"[{p:<17}] | Util: {final_util:<7.2f} | Acc: {avg_acc*100:<5.1f}% | Delay: {avg_del:<6.2f}ms | Score: {composite_score:.2f}")
             
-            # Update Category Winners
-            if avg_acc > category_winners["Acc Rate"]["val"]:
-                category_winners["Acc Rate"] = {"val": avg_acc, "policy": p}
-            if avg_del < category_winners["Delay"]["val"]:
-                category_winners["Delay"] = {"val": avg_del, "policy": p}
-            if final_util > category_winners["Utility"]["val"]:
-                category_winners["Utility"] = {"val": final_util, "policy": p}
-                
-            # Update Overall Winner
-            if composite_score > best_composite:
-                best_composite = composite_score
-                overall_winner = p
+            if avg_acc > category_winners["Acc Rate"]["val"]: category_winners["Acc Rate"] = {"val": avg_acc, "policy": p}
+            if avg_del < category_winners["Delay"]["val"]: category_winners["Delay"] = {"val": avg_del, "policy": p}
+            if final_util > category_winners["Utility"]["val"]: category_winners["Utility"] = {"val": final_util, "policy": p}
+            if composite_score > best_composite: best_composite, overall_winner = composite_score, p
 
         print("-" * 60)
         print(f"🏆 Highest Acceptance Rate : {category_winners['Acc Rate']['policy']} ({category_winners['Acc Rate']['val']*100:.1f}%)")
@@ -207,9 +239,14 @@ if __name__ == "__main__":
         
         log_message("\n" + "="*40 + "\nFINAL BENCHMARKING RESULTS\n" + "="*40)
         log_message(winner_msg)
-            
+        
     else:
-        print("Running core AC_DL_MATCH simulation (Production Mode)...")
-        run_simulation("AC_DL_MATCH", 100)
-    
+        print(f"Running core AC_DL_MATCH simulation (Production Mode | Runs: {TOTAL_MC_RUNS} | Quality: {quality} | Stress: {args.stress})...")
+        for run in range(TOTAL_MC_RUNS):
+            seed = random.randint(0, 1000000)
+            random.seed(seed)
+            np.random.seed(seed)
+            reset_drl()
+            run_simulation("AC_DL_MATCH", sim_slots, sim_fogs, sim_edges, quality)
+            
     print(f"Simulation Execution Concluded. System Logs: '{log_file_path}'")

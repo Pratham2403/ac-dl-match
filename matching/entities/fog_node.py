@@ -1,12 +1,22 @@
 import random
 
 class FogNode:
-    def __init__(self, node_id):
+    def __init__(self, node_id, quality="average"):
         self.id = node_id
-        self.cost = random.uniform(1, 10)
-        self.resources_left = random.uniform(0.8, 1.0)
+        if quality == "best":
+            self.cost = random.uniform(1, 5)
+            self.resources_left = random.uniform(0.9, 1.0)
+            self.capacity = 10
+        elif quality == "worst":
+            self.cost = random.uniform(5, 15)
+            self.resources_left = random.uniform(0.4, 0.7)
+            self.capacity = 3
+        else: # average
+            self.cost = random.uniform(1, 10)
+            self.resources_left = random.uniform(0.8, 1.0)
+            self.capacity = 5
+            
         self.active_tasks = 0
-        self.capacity = 5
 
     def update_state(self):
         tasks_to_complete = 0
