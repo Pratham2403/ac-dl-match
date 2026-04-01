@@ -145,7 +145,7 @@ if __name__ == "__main__":
 
     if args.tests:
         print("Running full benchmarking suite across all algorithms (Testing Mode)...")
-        policies = ["RANDOM", "GREEDY", "BLM_TS", "DRL", "ORIGINAL_DL_MATCH", "AC_DL_MATCH"]
+        policies = ["RANDOM", "GREEDY", "BLM_TS", "DRL", "META_PSO", "ORIGINAL_DL_MATCH", "AC_DL_MATCH"]
         all_metrics = {p: run_simulation(p, 100) for p in policies}
         
         try:

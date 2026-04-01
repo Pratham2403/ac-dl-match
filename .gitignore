@@ -1,7 +1,9 @@
-venv
-__pycache__
-logs
-results
+venv/
+__pycache__/
+logs/
+results/
+tests/
 REVIEW.md
 .github
 *.pdf
+*.log*

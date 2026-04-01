@@ -4,6 +4,9 @@ import torch.nn as nn
 import torch.optim as optim
 from algorithms.get_utility import get_utility
 from algorithms.get_acceptance import get_acceptance
+import pyswarms as ps
+import numpy as np
+import logging
 
 # Automatically detect available GPU device for PyTorch
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -128,6 +131,43 @@ def train_DRL(outcome, best_utility):
     loss.backward()
     _drl_optimizer.step()
 
+logging.getLogger("pyswarms").setLevel(logging.CRITICAL)
+
+def policy_PSO(available_fogs, edge):
+    """Meta-Heuristic Baseline (Particle Swarm Optimization)"""
+    def fitness_func(positions):
+        n_particles = positions.shape[0]
+        fitness = np.zeros(n_particles)
+        for i in range(n_particles):
+            pos_val = positions[i, 0]
+            if np.isnan(pos_val):
+                idx = random.randint(0, len(available_fogs)-1)
+            else:
+                idx = int(round(pos_val))
+            idx = max(0, min(len(available_fogs)-1, idx))
+            fog = available_fogs[idx]
+            m = edge.fog_metrics[fog.id]
+            u = get_utility(m["delay"], m["energy"], m["reliability"], fog.cost, edge.weights, 1)
+            fitness[i] = -u # PSO minimizes the cost function
+        return fitness
+
+    options = {'c1': 0.5, 'c2': 0.3, 'w': 0.9}
+    bounds = (np.array([0.0]), np.array([float(len(available_fogs)-1)]))
+    optimizer = ps.single.GlobalBestPSO(n_particles=10, dimensions=1, options=options, bounds=bounds, velocity_clamp=(-1.0, 1.0))
+    best_cost, best_pos = optimizer.optimize(fitness_func, iters=10, verbose=False)
+    
+    if np.isnan(best_pos[0]):
+        action_idx = random.randint(0, len(available_fogs)-1)
+    else:
+        action_idx = int(round(best_pos[0]))
+        
+    action_idx = max(0, min(len(available_fogs)-1, action_idx))
+    best_fog = available_fogs[action_idx]
+    
+    m = edge.fog_metrics[best_fog.id]
+    best_utility = get_utility(m["delay"], m["energy"], m["reliability"], best_fog.cost, edge.weights, 1)
+    return best_fog, best_utility, 1.0
+
 def policy_AC_DL_MATCH(available_fogs, edge, t, current_coeffs, epsilon):
     """Novel Architecture: k-Hop spatial awareness + Temporal Decay + Epsilon Exploration"""
     if random.random() < epsilon:
@@ -163,6 +203,8 @@ def run_policy(policy_name, available_fogs, edge, t, current_coeffs, epsilon):
         return policy_ORIGINAL_DL_MATCH(available_fogs, edge, current_coeffs)
     elif policy_name == "DRL":
         return policy_DRL(available_fogs, edge, t)
+    elif policy_name == "META_PSO":
+        return policy_PSO(available_fogs, edge)
     elif policy_name == "AC_DL_MATCH":
         return policy_AC_DL_MATCH(available_fogs, edge, t, current_coeffs, epsilon)
     else:
