@@ -112,8 +112,10 @@ def run_simulation(policy, num_slots=100, num_fogs=3, num_edges=10, quality="ave
                         edge.fog_metrics[best_fog.id]["failures"] = edge.fog_metrics[best_fog.id].get("failures", 0) + 1
                         edge.fog_metrics[best_fog.id]["last_pi"] = 0.9 * edge.fog_metrics[best_fog.id]["last_pi"]
                         
-                        # DEVIL FIXED: Introduce negotiation latency for rejected probes
-                        timeslot_delay += (edge.fog_metrics[best_fog.id]["delay"] * 0.1) # 10% round-trip penalty
+                        # NOVELTY FIX: Dynamic K-Hop Topology Penalty
+                        # Scales the TCP handshake rejection penalty explicitly by the physical router-hop distance
+                        hop_count = edge.fog_metrics[best_fog.id]["hops"]
+                        timeslot_delay += (edge.fog_metrics[best_fog.id]["delay"] * (0.05 * hop_count))
                         
                         log_message(f"[{t:03}] | Stage {stage+1} | Task-{edge.id:02} -> Fog-{best_fog.id:02} | Result: REJECTED")
                         available_fogs.remove(best_fog)
