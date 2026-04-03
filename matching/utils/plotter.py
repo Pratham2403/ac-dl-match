@@ -1,4 +1,5 @@
 import os
+import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
 import logging
@@ -87,13 +88,22 @@ class BenchmarkPlotter:
             ticks="inside", ticklen=5, tickwidth=1, tickcolor="black"
         )
 
+    def _trace_mode(self, n_points):
+        """Use markers only when the data is small enough to render clearly."""
+        return "lines+markers" if n_points <= 200 else "lines"
+
+    def _marker_interval(self, n_points):
+        """Subsample marker positions for large datasets."""
+        return max(1, n_points // 50)
+
     def plot_acceptance_rate(self):
         fig = go.Figure()
         for policy, data in self.metrics.items():
+            n = len(data["time"])
             fig.add_trace(go.Scatter(
                 x=data["time"], 
                 y=data["acc_rate"],
-                mode="lines+markers",
+                mode=self._trace_mode(n),
                 name=policy,
                 line=dict(color=self.colors.get(policy, "#000000"), width=2),
                 marker=dict(symbol=self.markers.get(policy, "circle"), size=6)
@@ -105,10 +115,11 @@ class BenchmarkPlotter:
     def plot_average_delay(self):
         fig = go.Figure()
         for policy, data in self.metrics.items():
+            n = len(data["time"])
             fig.add_trace(go.Scatter(
                 x=data["time"], 
                 y=data["delay"],
-                mode="lines+markers",
+                mode=self._trace_mode(n),
                 name=policy,
                 line=dict(color=self.colors.get(policy, "#000000"), width=2),
                 marker=dict(symbol=self.markers.get(policy, "circle"), size=6)
@@ -120,10 +131,11 @@ class BenchmarkPlotter:
     def plot_cumulative_utility(self):
         fig = go.Figure()
         for policy, data in self.metrics.items():
+            n = len(data["time"])
             fig.add_trace(go.Scatter(
                 x=data["time"], 
                 y=data["utility"],
-                mode="lines+markers",
+                mode=self._trace_mode(n),
                 name=policy,
                 line=dict(color=self.colors.get(policy, "#000000"), width=2.5),
                 marker=dict(symbol=self.markers.get(policy, "circle"), size=6)
@@ -133,7 +145,6 @@ class BenchmarkPlotter:
         self._save_figure(fig, "cumulative_utility")
 
     def plot_delay_cdf(self):
-        import numpy as np
         fig = go.Figure()
         for policy, data in self.metrics.items():
             # Calculate CDF of delay across all timeslots

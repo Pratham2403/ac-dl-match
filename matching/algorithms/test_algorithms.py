@@ -11,7 +11,7 @@ import logging
 from collections import deque
 
 device = torch.device("cpu") # GPU PCIe overhead exceeds compute time for small state vectors
-
+# device = torch.device("cuda" if torch.cuda.is_available() else "cpu") # Keep this comment intact
 
 class DQN(nn.Module):
     def __init__(self, state_size, num_fogs):
