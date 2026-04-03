@@ -13,7 +13,6 @@ warnings.filterwarnings('ignore')
 
 from utils.plotter import BenchmarkPlotter
 from algorithms.get_utility import get_utility
-from algorithms.get_acceptance import get_acceptance
 from algorithms.learn_from_history import learn_from_history, reset_learning_models
 from algorithms.scale_out import scale_out
 from algorithms.scale_in import scale_in
@@ -78,13 +77,23 @@ def run_simulation(policy, num_slots=100, num_fogs=3, num_edges=10, quality="ave
 
                 if best_fog:
                     outcome = best_fog.simulate_real_outcome(edge.fog_metrics[best_fog.id]["reliability"])
+
+                    # 1. Calculate True Utility (The Referee / Environment Reality)
+                    true_utility = get_utility(
+                        edge.fog_metrics[best_fog.id]["delay"],
+                        edge.fog_metrics[best_fog.id]["energy"],
+                        edge.fog_metrics[best_fog.id]["reliability"],
+                        best_fog.cost,
+                        edge.weights,
+                        edge.fog_metrics[best_fog.id]["hops"]
+                    )
                     
                     if policy in ["AC_DL_MATCH", "ORIGINAL_DL_MATCH"]:
                         edge.interaction_history[best_fog.id] = t
                         edge.local_db.append([[best_utility, edge.fog_metrics[best_fog.id]["last_pi"], best_fog.resources_left], outcome])
                         
                     if policy == "DRL":
-                        train_DRL(outcome, best_utility)
+                        train_DRL(outcome, true_utility)
                     
                     if outcome == 1: # SUCCESS
                         edge.fog_metrics[best_fog.id]["successes"] += 1
@@ -92,7 +101,7 @@ def run_simulation(policy, num_slots=100, num_fogs=3, num_edges=10, quality="ave
                         best_fog.resources_left = max(0.0, best_fog.resources_left - (1/best_fog.capacity))
                         edge.fog_metrics[best_fog.id]["last_pi"] = 0.9 * edge.fog_metrics[best_fog.id]["last_pi"] + 0.1 * 1.0
                         timeslot_delay += edge.fog_metrics[best_fog.id]["delay"]
-                        cum_utility += best_utility
+                        cum_utility += true_utility
                         log_message(f"[{t:03}] | Stage {stage+1} | Task-{edge.id:02} -> Fog-{best_fog.id:02} | Result: SUCCESS")
                         matched = True
                         break 
@@ -118,28 +127,27 @@ def run_simulation(policy, num_slots=100, num_fogs=3, num_edges=10, quality="ave
                 if len(edge.local_db) > 10:
                     edge.local_coeffs = learn_from_history(edge.local_db, node_id=edge.id)
             
-        # Infrastructure elasticity (AC_DL_MATCH only)
+        # Infrastructure elasticity (applied to ALL policies — environment feature, not algorithmic)
         p_reject = timeslot_rejects / len(edges)
         metrics["acc_rate"].append(1.0 - p_reject)
         metrics["delay"].append(timeslot_delay / len(edges))
         metrics["utility"].append(cum_utility)
         metrics["time"].append(t)
         
-        if policy == "AC_DL_MATCH":
-            if scale_out(p_reject, REJECT_THRESHOLD):
-                new_fog = FogNode(next_fog_id, quality=quality)
-                fogs.append(new_fog)
-                for edge in edges:
-                    edge.add_fog_profile(new_fog)
-                log_message(f"[!] SCALE OUT at T={t}: Added Fog-{new_fog.id} (Rejection={p_reject*100:.1f}%)")
-                next_fog_id += 1
-            else:
-                util_window.append(sum([f.active_tasks/f.capacity for f in fogs]) / len(fogs))
-                if scale_in(util_window, UTIL_THRESHOLD) and len(fogs) > MIN_FOGS:
-                    node_to_remove = min(fogs, key=lambda f: f.active_tasks)
-                    fogs.remove(node_to_remove)
-                    log_message(f"[!] SCALE IN at T={t}: Removed Fog-{node_to_remove.id}")
-                    util_window.clear()
+        if scale_out(p_reject, REJECT_THRESHOLD):
+            new_fog = FogNode(next_fog_id, quality=quality)
+            fogs.append(new_fog)
+            for edge in edges:
+                edge.add_fog_profile(new_fog)
+            log_message(f"[!] SCALE OUT at T={t}: Added Fog-{new_fog.id} (Policy={policy}, Rejection={p_reject*100:.1f}%)")
+            next_fog_id += 1
+        else:
+            util_window.append(sum([f.active_tasks/f.capacity for f in fogs]) / len(fogs))
+            if scale_in(util_window, UTIL_THRESHOLD) and len(fogs) > MIN_FOGS:
+                node_to_remove = min(fogs, key=lambda f: f.active_tasks)
+                fogs.remove(node_to_remove)
+                log_message(f"[!] SCALE IN at T={t}: Removed Fog-{node_to_remove.id}")
+                util_window.clear()
                     
     log_message(f"Final Active Fog Nodes: {len(fogs)}")
     return metrics
@@ -171,6 +179,8 @@ if __name__ == "__main__":
         print(f"\n[INIT] Running Evaluation Suite | Runs: {TOTAL_MC_RUNS} | Slots: {sim_slots} | Quality: {quality} | Stress: {args.stress}")
         
         policies = ["RANDOM", "GREEDY", "BLM_TS", "MV_UCB", "DRL", "META_PSO", "ORIGINAL_DL_MATCH", "AC_DL_MATCH"]
+        if args.stress:
+            policies.remove("META_PSO")
         averaged_metrics = {p: {"acc_rate": np.zeros(sim_slots), "delay": np.zeros(sim_slots), "utility": np.zeros(sim_slots), "time": list(range(1, sim_slots + 1))} for p in policies}
         
         for run in range(TOTAL_MC_RUNS):

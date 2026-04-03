@@ -111,9 +111,10 @@ def policy_DRL(available_fogs, edge, t):
     max_fogs = len(edge.fog_metrics)
     state_size = 4 * max_fogs
     
-    if _drl_agent is None:
+    if _drl_agent is None or _drl_agent.fc1.in_features != state_size:
         _drl_agent = DQN(state_size, max_fogs).to(device)
         _drl_optimizer = optim.Adam(_drl_agent.parameters(), lr=0.01)
+        _replay_buffer.clear()
         
     epsilon_drl = max(0.1, 1.0 - (t / 50.0))
     
