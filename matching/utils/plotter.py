@@ -26,6 +26,7 @@ class BenchmarkPlotter:
             "BLM_TS": "#87CEFA",           # Light Sky Blue
             "ORIGINAL_DL_MATCH": "#4682B4",# Steel Blue
             "DRL": "#8A2BE2",              # BlueViolet
+            "MV_UCB": "#2E8B57",           # SeaGreen
             "META_PSO": "#FF8C00",         # DarkOrange
             "AC_DL_MATCH": "#DC143C"       # Crimson (Highlight)
         }
@@ -35,6 +36,7 @@ class BenchmarkPlotter:
             "GREEDY": "square",
             "BLM_TS": "diamond",
             "ORIGINAL_DL_MATCH": "triangle-up",
+            "MV_UCB":"triangle-down",
             "DRL": "x",
             "META_PSO": "cross",
             "AC_DL_MATCH": "star"

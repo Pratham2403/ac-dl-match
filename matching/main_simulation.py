@@ -1,3 +1,5 @@
+"""AC-DL-MATCH Benchmarking Simulator for Task Offloading in Dynamic Fog Computing Networks."""
+
 import os
 import time
 import random
@@ -5,29 +7,22 @@ import argparse
 import numpy as np
 from collections import deque
 from datetime import datetime
-import plotly.graph_objects as go
-import plotly.io as pio
 import warnings
 
 warnings.filterwarnings('ignore')
-pio.templates.default = "plotly_white"
 
-# Import Algorithms
 from utils.plotter import BenchmarkPlotter
 from algorithms.get_utility import get_utility
 from algorithms.get_acceptance import get_acceptance
-from algorithms.learn_from_history import learn_from_history
+from algorithms.learn_from_history import learn_from_history, reset_learning_models
 from algorithms.scale_out import scale_out
 from algorithms.scale_in import scale_in
 from algorithms.test_algorithms import run_policy, train_DRL, reset_drl
-
-# Import Entities
 from entities.fog_node import FogNode
 from entities.edge_node import EdgeNode
 
-# 1. Setup Logging
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-log_file_path = None  # Set later only if logging is needed
+log_file_path = None
 _log_file_handle = None
 
 def init_logging():
@@ -40,8 +35,8 @@ def log_message(msg):
     if _log_file_handle:
         _log_file_handle.write(msg + "\n")
 
-# 2. Main Simulation Loop
 def run_simulation(policy, num_slots=100, num_fogs=3, num_edges=10, quality="average"):
+    """Run a single simulation epoch for the given policy and return time-series metrics."""
     reset_drl()
     log_message(f"\n{'='*20} STARTING POLICY: {policy} {'='*20}")
     
@@ -54,9 +49,6 @@ def run_simulation(policy, num_slots=100, num_fogs=3, num_edges=10, quality="ave
     fogs = [FogNode(i, quality=quality) for i in range(MIN_FOGS)]
     edges = [EdgeNode(i, [random.randint(1,10) for _ in range(4)], fogs, quality=quality) for i in range(num_edges)]
     
-    # Memory Optimization: Bound the distributed learning history to prevent OOM
-    global_db = deque(maxlen=5000)
-    current_coeffs = [1.0, 1.0, 1.0]
     next_fog_id = MIN_FOGS
     
     metrics = {"acc_rate": [], "delay": [], "utility": [], "time": []}
@@ -67,13 +59,12 @@ def run_simulation(policy, num_slots=100, num_fogs=3, num_edges=10, quality="ave
         for fog in fogs:
             fog.update_state()
             
-        timeslot_requests, timeslot_rejects, timeslot_delay = 0, 0, 0
+        timeslot_rejects, timeslot_delay = 0, 0
         epsilon = 1.0 / (t ** 0.6) if policy in ["AC_DL_MATCH", "ORIGINAL_DL_MATCH"] else 0
         
         for edge in edges:
             matched = False
             
-            # Strategy C Filter: Maintain routing tables for network mobility, but enforce hard hop limit
             available_fogs = [f for f in fogs if edge.fog_metrics[f.id]["hops"] <= K_MAX_HOPS]
             
             # K_MAX Retry Loop
@@ -81,25 +72,22 @@ def run_simulation(policy, num_slots=100, num_fogs=3, num_edges=10, quality="ave
                 if not available_fogs:
                     break
                 
-                # Evaluate algorithm execution policy
                 best_fog, best_utility, best_prob = run_policy(
-                    policy, available_fogs, edge, t, current_coeffs, epsilon
+                    policy, available_fogs, edge, t, edge.local_coeffs, epsilon
                 )
-                
-                # Evaluation
+
                 if best_fog:
-                    timeslot_requests += 1
                     outcome = best_fog.simulate_real_outcome(edge.fog_metrics[best_fog.id]["reliability"])
                     
                     if policy in ["AC_DL_MATCH", "ORIGINAL_DL_MATCH"]:
                         edge.interaction_history[best_fog.id] = t
-                        global_db.append([[best_utility, edge.fog_metrics[best_fog.id]["last_pi"], best_fog.resources_left], outcome])
+                        edge.local_db.append([[best_utility, edge.fog_metrics[best_fog.id]["last_pi"], best_fog.resources_left], outcome])
                         
                     if policy == "DRL":
                         train_DRL(outcome, best_utility)
                     
                     if outcome == 1: # SUCCESS
-                        edge.fog_metrics[best_fog.id]["successes"] = edge.fog_metrics[best_fog.id].get("successes", 0) + 1
+                        edge.fog_metrics[best_fog.id]["successes"] += 1
                         best_fog.active_tasks += 1
                         best_fog.resources_left = max(0.0, best_fog.resources_left - (1/best_fog.capacity))
                         edge.fog_metrics[best_fog.id]["last_pi"] = 0.9 * edge.fog_metrics[best_fog.id]["last_pi"] + 0.1 * 1.0
@@ -109,11 +97,10 @@ def run_simulation(policy, num_slots=100, num_fogs=3, num_edges=10, quality="ave
                         matched = True
                         break 
                     else: # FAILED (Try next stage)
-                        edge.fog_metrics[best_fog.id]["failures"] = edge.fog_metrics[best_fog.id].get("failures", 0) + 1
+                        edge.fog_metrics[best_fog.id]["failures"] += 1
                         edge.fog_metrics[best_fog.id]["last_pi"] = 0.9 * edge.fog_metrics[best_fog.id]["last_pi"]
                         
-                        # NOVELTY FIX: Dynamic K-Hop Topology Penalty
-                        # Scales the TCP handshake rejection penalty explicitly by the physical router-hop distance
+                        # Rejection delay: scales with physical hop distance
                         hop_count = edge.fog_metrics[best_fog.id]["hops"]
                         timeslot_delay += (edge.fog_metrics[best_fog.id]["delay"] * (0.05 * hop_count))
                         
@@ -125,11 +112,13 @@ def run_simulation(policy, num_slots=100, num_fogs=3, num_edges=10, quality="ave
                 timeslot_delay += 100 # Cloud penalty
                 log_message(f"[{t:03}] | Stage - | Task-{edge.id:02} -> CLOUD   | Result: ESCALATED")
                 
-        # Distributed Learning Weight Updates
-        if policy in ["AC_DL_MATCH", "ORIGINAL_DL_MATCH"] and len(global_db) > 10 and t % 5 == 0:
-            current_coeffs = learn_from_history(global_db)
+        # Distributed weight updates (each edge trains independently)
+        if policy in ["AC_DL_MATCH", "ORIGINAL_DL_MATCH"] and t % 5 == 0:
+            for edge in edges:
+                if len(edge.local_db) > 10:
+                    edge.local_coeffs = learn_from_history(edge.local_db, node_id=edge.id)
             
-        # Infrastructure Elasticity
+        # Infrastructure elasticity (AC_DL_MATCH only)
         p_reject = timeslot_rejects / len(edges)
         metrics["acc_rate"].append(1.0 - p_reject)
         metrics["delay"].append(timeslot_delay / len(edges))
@@ -155,7 +144,6 @@ def run_simulation(policy, num_slots=100, num_fogs=3, num_edges=10, quality="ave
     log_message(f"Final Active Fog Nodes: {len(fogs)}")
     return metrics
 
-# 3. Execution Execution
 if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="AC-DL Match Architecture Simulator")
@@ -189,20 +177,19 @@ if __name__ == "__main__":
             print(f"\n{'='*20} STARTING SIMULATION EPOCH {run+1}/{TOTAL_MC_RUNS} {'='*20}")
             log_message(f"\n{'='*20} STARTING SIMULATION EPOCH {run+1}/{TOTAL_MC_RUNS} {'='*20}")
             
-            # Lock the initial mathematical topology for all policies within this epoch run
+            # Same seed ensures identical topology across all policies
             seed = random.randint(0, 1000000)
             
             for p in policies:
                 reset_drl()
+                reset_learning_models()
                 random.seed(seed)
                 np.random.seed(seed)
                 
-                # Execution Time Tracking
                 start_time = time.perf_counter()
                 run_data = run_simulation(p, sim_slots, sim_fogs, sim_edges, quality) 
                 exec_time = time.perf_counter() - start_time
                 
-                # Intermediate calculation to replicate per-run output
                 run_acc = np.mean(run_data['acc_rate']) if run_data['acc_rate'] else 0
                 run_del = np.mean(run_data['delay']) if run_data['delay'] else 1e-5
                 run_util = run_data['utility'][-1] if run_data['utility'] else 0
