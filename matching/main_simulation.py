@@ -34,7 +34,7 @@ def log_message(msg):
     if _log_file_handle:
         _log_file_handle.write(msg + "\n")
 
-def run_simulation(policy, num_slots=100, num_fogs=3, num_edges=10, quality="average"):
+def run_simulation(policy, num_slots=500, num_fogs=5, num_edges=15, quality="average"):
     """Run a single simulation epoch for the given policy and return time-series metrics."""
     reset_drl()
     log_message(f"\n{'='*20} STARTING POLICY: {policy} {'='*20}")
@@ -168,7 +168,7 @@ if __name__ == "__main__":
     elif args.worst: quality = "worst"
 
     TOTAL_MC_RUNS = args.run
-    sim_slots = 2000 if args.stress else 100
+    sim_slots = 2000 if args.stress else 500 
     sim_fogs = 20 if args.stress else 5
     sim_edges = 150 if args.stress else 15
     # Only create log files for non-stress runs to avoid I/O bottleneck

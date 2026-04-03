@@ -32,7 +32,7 @@ _last_action = None
 _replay_buffer = None
 
 BATCH_SIZE = 32
-REPLAY_BUFFER_SIZE = 2000
+REPLAY_BUFFER_SIZE = 100000
 
 def reset_drl():
     global _drl_agent, _drl_optimizer, _last_state, _last_action, _replay_buffer
@@ -116,7 +116,7 @@ def policy_DRL(available_fogs, edge, t):
         _drl_optimizer = optim.Adam(_drl_agent.parameters(), lr=0.01)
         _replay_buffer.clear()
         
-    epsilon_drl = max(0.1, 1.0 - (t / 50.0))
+    epsilon_drl = max(0.05, 1.0 - (t / 400.0))
     
     # Zero-padded state: each fog occupies a fixed position by ID
     current_state = [0.0] * state_size
