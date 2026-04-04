@@ -4,7 +4,7 @@ logs/
 results/
 tests/
 REVIEW.md
-main.py
+MAIN.md
 .github
 *.pdf
 *.log*
