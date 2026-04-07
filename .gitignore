@@ -8,3 +8,4 @@ MAIN.md
 .github
 *.pdf
 *.log*
+*.gz

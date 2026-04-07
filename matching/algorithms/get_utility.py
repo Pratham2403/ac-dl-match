@@ -1,15 +1,14 @@
-import math
-
-def get_utility(delay, energy, reliability, cost, task_weights, hops=1, k_max=3):
+def get_utility(norm_delay, norm_energy, norm_rel, norm_cost, task_weights, hops=1, k_max=3):
     w1, w2, w3, w4 = task_weights
-    # Context-Aware Utility
-    raw_utility = (w1 / (delay + 1e-5)) + (w2 / (energy + 1e-5)) + (w3 * reliability) - (w4 * cost)
     
-    # k-hop Penalty
-    k_hop_penalty = 1 - (0.3 * hops / k_max)
-    raw_utility *= k_hop_penalty
+    # Pure Weighted Average of [0,1] normalized SLA parameters
+    total_weight = sum(task_weights)
+    weighted_sum = (w1 * norm_delay) + (w2 * norm_energy) + (w3 * norm_rel) + (w4 * norm_cost)
+    raw_utility = weighted_sum / (total_weight + 1e-5)
     
-    try:
-        return 1 / (1 + math.exp(-raw_utility))
-    except OverflowError:
-        return 0 if raw_utility < 0 else 1
+    # k-hop Spatial Penalty
+    k_hop_penalty = 1.0 - (0.3 * hops / k_max)
+    final_utility = raw_utility * k_hop_penalty
+    
+    # Clamp safely between 0 and 1 (NO SIGMOID)
+    return max(0.0, min(1.0, final_utility))

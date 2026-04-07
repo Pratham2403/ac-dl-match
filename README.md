@@ -37,8 +37,11 @@ Current approaches consider only delay and cost, ignoring:
 - **Centralized optimization (ILP)**: Cannot handle 10,000+ IoT devices
 - **Deep Learning (DRL)**: Requires 100,000+ training iterations, excessive computational power, unsuitable for resource-constrained ESP32/Raspberry Pi devices
 
-### 5. **No Cross-Domain Support**
+### 5. **Single-Domain Deadlock**
 Tasks cannot migrate between fog provider domains (e.g., from Provider A to Provider B) when local capacity exhausted, causing **complete system failures**.
+
+### 6. **Dimensional Collapse in Utilities**
+Traditional multi-objective functions suffer from *dimensional collapse*, where raw metrics of wildly varying magnitudes (e.g., `100ms` latency vs `$0.01` cost) disproportionately skew the optimization gradients. Resolving this via global Z-scores violates decentralized zero-communication topologies.
 
 ---
 
@@ -129,7 +132,21 @@ Where:
 Fully decouples mathematical convergence (DRL and Meta-Heuristics) using a deterministic Monte-Carlo execution thread. 
 No third-party Java-dependent simulation engines bounding memory allocation limits.
 
-**Benefit**: Benchmarking operates up to `2000` concurrent tasks generating `300M+` internal utility equations natively in `Python/PyTorch` cleanly integrating GPU inference hooks.
+**Core Simulation Mechanics:**
+- **Poisson Burst Task Arrivals:** Models real-world IoT traffic using Poisson distributions ($\lambda=0.8$) to represent bursty, unpredictable network alarms (overcoming legacy Constant Bit Rate models).
+- **Heterogeneous Application Cycling:** Edge Nodes dynamically cycle their application priorities on the fly to emulate real-world, multi-tasking sensor realities (e.g., an autonomous vehicle switching from caching maps to emergency braking).
+- **Strict Benchmarking Constraints:** All baseline algorithmic bounds operate identically on a mathematically seeded topology under physical infrastructure elasticity limiting (`MAX_SDN_FOGS`), ensuring algorithm results are isolated from hardware rigging.
+- **Context-Mapped ML Architectures:** Appends Edge subjective weights explicitly inside Deep Reinforcement Learning state spaces `(4 × max_sdn_fogs) + 4` ensuring identical contextual knowledge among baselines.
+
+---
+
+#### 5️⃣ **Decoupled Subjective QoS Mapping ($O(1)$ SLA Bounding)**
+
+Centralized computing models calculate cost/delay from the physical Server's uniform perspective. Our architecture decouples **Subjective QoS** from **Objective Hardware states**.
+
+Rather than cross-communicating gradients, Edge nodes natively execute an $O(1)$ Decentralized SLA-Bounding Protocol:
+$$U_{norm} = \max(0, 1 - \frac{x}{X_{max}})$$
+This maps disparate magnitudes universally into an equivalent $\in [0, 1]$ dimension space exactly upon resource discovery—neutralizing dimensional collapse instantly without synchronization overhead.
 
 ---
 

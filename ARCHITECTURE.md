@@ -136,21 +136,23 @@ Where:
 
 ```
 U_ij^original = 1 / D_ij - C_ij
-
-Where:
-- D_ij : Total delay for task i on fog node j
-- C_ij : Monetary cost
 ```
 
-**Problem**: Ignores energy and reliability, treats all tasks equally.
+**Problem**: Ignores energy and reliability, treats all tasks equally, and suffers from **Dimensional Collapse** where milliseconds and monetary values skew scalar boundaries heavily depending on arbitrary physical limits.
 
 ---
 
-#### Modified Utility (AC-DL-MATCH)
+#### Modified Normalized Utility (AC-DL-MATCH)
+
+We implement an $O(1)$ Decentralized SLA-Bounding Protocol wherein Edge nodes normalize all newly discovered resources exclusively into an $\in [0, 1]$ dimension space safely natively:
 
 ```
-U_ij^modified = ω₁^Tᵢ × (1 / D_ij^(t)) + ω₂^Tᵢ × (1 / E_ij^(t)) + ω₃^Tᵢ × R_j^(t) - ω₄^Tᵢ × C_ij^(t)
+U_ij^modified = (ω₁^Tᵢ × D_norm) + (ω₂^Tᵢ × E_norm) + (ω₃^Tᵢ × R_norm) + (ω₄^Tᵢ × C_norm)
 ```
+
+**Component Bounding Breakdown**:
+Rather than absolute values, each metric $x$ evaluates strictly bounding against SLA maximum thresholds mapping: 
+$X_{norm} = \max(0, 1 - \frac{x}{X_{max}})$
 
 **Component Breakdown**:
 
@@ -212,28 +214,10 @@ Weight Assignment Table:
 Constraint: Σ ωᵢ = 1.0 (normalized weights)
 ```
 
-**Example Calculation**:
+**Note on Scale & Context Injecting:**
+Because applications (Video caching vs Emergency Braking) dynamically swap inside the IoT cluster, the tasks change dynamically. Our Deep Learning Algorithm (DRL) specifically ingests `(4 × max_sdn_fogs) + 4` variables where the exact 4 $\omega$ weights of the active Edge Node are inherently concatenated to the tensor so the learning agent fully models identical internal contexts! 
 
-**Task**: Autonomous vehicle path planning (delay-sensitive, S=2MB, χ=10⁹ cycles)  
-**Fog Node**: f=3GHz, mem=8GB, Q=50, C=$0.02/MB, R=0.92, pd=5ms, δ=100Mbps
-
-```
-D_ij = 5ms + (2MB / 100Mbps) + (10⁹ / 3×10⁹) 
-     = 5ms + 0.16ms + 333ms 
-     = 338.16ms
-
-E_ij = 2W × (2 / 100) + 0.5W × 10 
-     = 0.04W + 5W 
-     = 5.04 Wh
-
-R_j = 0.92
-
-C_ij = 0.02 × 2 = $0.04
-
-U_ij = 0.6 × (1 / 0.33816) + 0.1 × (1 / 5.04) + 0.2 × 0.92 - 0.1 × 0.04
-     = 1.774 + 0.0198 + 0.184 - 0.004
-     = 1.974
-```
+Additionally, network testing scales utilize stochastic bursts using **Poisson Probabilistic Generators** ($\lambda=0.8$) rather than legacy `CBR (Constant Bit Rate)` metrics, accurately emulating volatile real-world smart-city alarms safely natively!
 
 ---
 

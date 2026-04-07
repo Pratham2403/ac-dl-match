@@ -32,32 +32,27 @@ class BenchmarkPlotter:
             "AC_DL_MATCH": "#DC143C"       # Crimson (Highlight)
         }
         
-        self.markers = {
-            "RANDOM": "circle",
-            "GREEDY": "square",
-            "BLM_TS": "diamond",
-            "ORIGINAL_DL_MATCH": "triangle-up",
-            "MV_UCB":"triangle-down",
-            "DRL": "x",
-            "META_PSO": "cross",
-            "AC_DL_MATCH": "star"
+        # IEEE requires distinct line styles for B&W printing
+        self.line_dash = {
+            "RANDOM": "dot",
+            "GREEDY": "dash",
+            "BLM_TS": "dashdot",
+            "ORIGINAL_DL_MATCH": "dot",
+            "MV_UCB": "dash",
+            "DRL": "solid",
+            "META_PSO": "dashdot",
+            "AC_DL_MATCH": "solid"
         }
 
     def _save_figure(self, fig, filename):
         """Helper to save interactive HTML and static images."""
         base_path = os.path.join(self.results_dir, filename)
-        
-        # Save Interactive HTML
-        html_path = f"{base_path}.html"
-        fig.write_html(html_path)
-        
-        # Note: requires 'kaleido' dependency
+        fig.write_html(f"{base_path}.html")
         try:
-            png_path = f"{base_path}.png"
-            fig.write_image(png_path, width=800, height=600, scale=3)
+            fig.write_image(f"{base_path}.png", width=800, height=600, scale=3)
         except Exception:
-            pass # Fallback if kaleido is unavailable
-            
+            pass
+
     def _apply_ieee_layout(self, fig, title, x_title, y_title):
         """Applies consistent IEEE styling format to the figure layout and axes."""
         fig.update_layout(
@@ -67,12 +62,11 @@ class BenchmarkPlotter:
             legend=dict(
                 title=dict(text="Offloading Policies", font=dict(family="Times New Roman", size=12)),
                 font=dict(family="Times New Roman", size=12),
-                bgcolor="rgba(255,255,255,0.8)", bordercolor="Black", borderwidth=1,
-                x=0.02, y=0.98
+                bgcolor="rgba(255,255,255,0.9)", bordercolor="Black", borderwidth=1,
+                x=0.01, y=0.99
             ),
             font=dict(family="Times New Roman", size=12, color="black"),
-            plot_bgcolor='white',
-            paper_bgcolor='white',
+            plot_bgcolor='white', paper_bgcolor='white',
             margin=dict(l=60, r=40, t=60, b=50)
         )
         fig.update_xaxes(
@@ -88,83 +82,76 @@ class BenchmarkPlotter:
             ticks="inside", ticklen=5, tickwidth=1, tickcolor="black"
         )
 
-    def _trace_mode(self, n_points):
-        """Use markers only when the data is small enough to render clearly."""
-        return "lines+markers" if n_points <= 200 else "lines"
+    def _smooth_data(self, data, window_size=10):
+        """Applies a moving average to reduce noise in stress tests."""
+        if len(data) < window_size:
+            return data
+        return np.convolve(data, np.ones(window_size)/window_size, mode='valid')
 
-    def _marker_interval(self, n_points):
-        """Subsample marker positions for large datasets."""
-        return max(1, n_points // 50)
+    def _plot_timeseries(self, metric_key, title, y_label, filename, smooth=False):
+        fig = go.Figure()
+        for policy, data in self.metrics.items():
+            y_data = data[metric_key]
+            x_data = data["time"]
+            
+            if smooth and len(x_data) >= 100:
+                y_data = self._smooth_data(y_data, window_size=20)
+                # mode='valid' starts output at window_size-1, so clip the start of Time Series, not the end!
+                x_data = x_data[19:]
+                
+            linewidth = 3.0 if policy == "AC_DL_MATCH" else 2.0
+                
+            fig.add_trace(go.Scatter(
+                x=x_data, y=y_data,
+                mode="lines",
+                name=policy,
+                line=dict(
+                    color=self.colors.get(policy, "#000000"), 
+                    width=linewidth,
+                    dash=self.line_dash.get(policy, "solid")
+                )
+            ))
+            
+        self._apply_ieee_layout(fig, title, "Time Slots", y_label)
+        self._save_figure(fig, filename)
 
     def plot_acceptance_rate(self):
-        fig = go.Figure()
-        for policy, data in self.metrics.items():
-            n = len(data["time"])
-            fig.add_trace(go.Scatter(
-                x=data["time"], 
-                y=data["acc_rate"],
-                mode=self._trace_mode(n),
-                name=policy,
-                line=dict(color=self.colors.get(policy, "#000000"), width=2),
-                marker=dict(symbol=self.markers.get(policy, "circle"), size=6)
-            ))
-            
-        self._apply_ieee_layout(fig, "Task Acceptance Rate over Time", "Time Slots", "Acceptance Rate")
-        self._save_figure(fig, "acceptance_rate")
+        self._plot_timeseries("acc_rate", "Task Acceptance Rate over Time", "Acceptance Rate", "acceptance_rate", smooth=True)
 
     def plot_average_delay(self):
-        fig = go.Figure()
-        for policy, data in self.metrics.items():
-            n = len(data["time"])
-            fig.add_trace(go.Scatter(
-                x=data["time"], 
-                y=data["delay"],
-                mode=self._trace_mode(n),
-                name=policy,
-                line=dict(color=self.colors.get(policy, "#000000"), width=2),
-                marker=dict(symbol=self.markers.get(policy, "circle"), size=6)
-            ))
-            
-        self._apply_ieee_layout(fig, "Average Network Delay over Time", "Time Slots", "Delay (ms)")
-        self._save_figure(fig, "average_delay")
+        self._plot_timeseries("delay", "Average Network Delay over Time", "Delay (ms)", "average_delay", smooth=True)
+        
+    def plot_average_energy(self):
+        self._plot_timeseries("energy", "Average Energy Consumption over Time", "Energy (Joules)", "average_energy", smooth=True)
+
+    def plot_average_cost(self):
+        self._plot_timeseries("cost", "Average Economic Cost over Time", "Cost (Units)", "average_cost", smooth=True)
 
     def plot_cumulative_utility(self):
-        fig = go.Figure()
-        for policy, data in self.metrics.items():
-            n = len(data["time"])
-            fig.add_trace(go.Scatter(
-                x=data["time"], 
-                y=data["utility"],
-                mode=self._trace_mode(n),
-                name=policy,
-                line=dict(color=self.colors.get(policy, "#000000"), width=2.5),
-                marker=dict(symbol=self.markers.get(policy, "circle"), size=6)
-            ))
-            
-        self._apply_ieee_layout(fig, "Cumulative System Utility Score", "Time Slots", "Utility Score")
-        self._save_figure(fig, "cumulative_utility")
+        # Utility should never be smoothed, it's cumulative.
+        self._plot_timeseries("utility", "Cumulative System Utility Score", "Utility Score", "cumulative_utility", smooth=False)
 
     def plot_delay_cdf(self):
         fig = go.Figure()
         for policy, data in self.metrics.items():
-            # Calculate CDF of delay across all timeslots
             sorted_delays = np.sort(data["delay"])
             cdf = np.arange(1, len(sorted_delays) + 1) / len(sorted_delays)
             
+            linewidth = 3.0 if policy == "AC_DL_MATCH" else 2.0
+            
             fig.add_trace(go.Scatter(
-                x=sorted_delays, 
-                y=cdf,
-                mode="lines",
-                name=policy,
-                line=dict(color=self.colors.get(policy, "#000000"), width=2.5)
+                x=sorted_delays, y=cdf, mode="lines", name=policy,
+                line=dict(color=self.colors.get(policy, "#000000"), width=linewidth, dash=self.line_dash.get(policy, "solid"))
             ))
             
-        self._apply_ieee_layout(fig, "Cumulative Distribution Function (CDF) of Offloading Delay", "Offloading Delay (ms)", "Cumulative Probability")
+        self._apply_ieee_layout(fig, "CDF of Offloading Delay", "Offloading Delay (ms)", "Cumulative Probability")
         self._save_figure(fig, "offloading_delay_cdf")
 
     def generate_all_plots(self):
-        """Generates all standard benchmarking visualizations."""
+        """Generates all 6 standard benchmarking visualizations."""
         self.plot_acceptance_rate()
         self.plot_average_delay()
+        self.plot_average_energy()    # NEW
+        self.plot_average_cost()      # NEW
         self.plot_cumulative_utility()
         self.plot_delay_cdf()

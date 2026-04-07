@@ -3,7 +3,8 @@ from collections import deque
 
 class EdgeNode:
     """Represents an IoT task node with per-fog routing metrics and local learning state."""
-    def __init__(self, node_id, weights, fogs, quality="average"):
+    def __init__(self, node_id, weights, fogs, env_config, quality="average"):
+        self.bounds = env_config  # Store the SLA limits
         self.id = node_id
         self.weights = weights
         self.quality = quality
@@ -33,10 +34,20 @@ class EdgeNode:
         # The Edge generates real-world broadcast distances
         hops = random.randint(1, 4)
 
+        # NEW: O(1) SLA-Driven Bounding. Clamped at 0.0 for anomalies.
+        norm_delay = max(0.0, 1.0 - (delay / self.bounds['MAX_DELAY']))
+        norm_energy = max(0.0, 1.0 - (energy / self.bounds['MAX_ENERGY']))
+        norm_cost = max(0.0, 1.0 - (fog.cost / self.bounds['MAX_COST']))
+        norm_rel = min(reliability, 1.0)
+
         self.fog_metrics[fog.id] = {
             "delay": delay,
             "energy": energy,
             "reliability": reliability,
+            "norm_delay": norm_delay,
+            "norm_energy": norm_energy,
+            "norm_cost": norm_cost,
+            "norm_rel": norm_rel,
             "last_pi": 0.5,
             "successes": 0,
             "failures": 0,
