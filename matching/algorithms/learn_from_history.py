@@ -19,9 +19,9 @@ def learn_from_history(history_db, node_id=None):
     if len(set(y)) < 2: return [1.0, 1.0, 1.0]
 
     if node_id not in _lr_models:
-        _lr_models[node_id] = LogisticRegression(warm_start=True, max_iter=200)
+        _lr_models[node_id] = LogisticRegression(warm_start=True, max_iter=200, C=10.0)
     
     model = _lr_models[node_id]
     model.fit(X, y)
     
-    return model.coef_[0]
+    return (model.coef_[0], model.intercept_[0])

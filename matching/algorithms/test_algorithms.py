@@ -11,14 +11,17 @@ import logging
 from collections import deque
 
 device = torch.device("cpu") # GPU PCIe overhead exceeds compute time for small state vectors
-# device = torch.device("cuda" if torch.cuda.is_available() else "cpu") # Keep this comment intact
+
+CROSS_DOMAIN_PENALTY = 0.20 # Standard East-West federation interconnection penalty
+MIN_UTILITY_THRESHOLD = 0.30  # Raw utility threshold
+MIN_PROB_THRESHOLD = 0.15     # Allow algorithm to take a 15% chance if utility is amazing
 
 class DQN(nn.Module):
-    def __init__(self, state_size, num_fogs):
+    def __init__(self, state_size, max_actions):
         super(DQN, self).__init__()
-        self.fc1 = nn.Linear(state_size, 24)
-        self.fc2 = nn.Linear(24, 24)
-        self.out = nn.Linear(24, num_fogs)
+        self.fc1 = nn.Linear(state_size, 64)
+        self.fc2 = nn.Linear(64, 64)
+        self.out = nn.Linear(64, max_actions)
 
     def forward(self, x):
         x = torch.relu(self.fc1(x))
@@ -34,7 +37,7 @@ _replay_buffer = None
 BATCH_SIZE = 32
 REPLAY_BUFFER_SIZE = 100000
 
-def reset_drl(max_sdn_fogs):
+def reset_drl(max_total_fogs):
     global _drl_agent, _drl_optimizer, _last_state, _last_action, _replay_buffer
     _drl_agent = None
     _drl_optimizer = None
@@ -42,88 +45,100 @@ def reset_drl(max_sdn_fogs):
     _last_action = None
     _replay_buffer = deque(maxlen=REPLAY_BUFFER_SIZE)
 
-def policy_RANDOM(available_fogs, edge):
-    """Uniform random fog selection."""
-    best_fog = random.choice(available_fogs)
-    m = edge.fog_metrics[best_fog.id]
-    best_utility = get_utility(m["norm_delay"], m["norm_energy"], m["norm_rel"], m["norm_cost"], edge.weights, m["hops"])
-    return best_fog, best_utility, 1.0
+def get_search_space(local_fogs, neighbor_fogs):
+    return [(f, False) for f in local_fogs] + [(f, True) for f in neighbor_fogs]
 
-def policy_GREEDY(available_fogs, edge):
-    """Selects the fog with highest utility, no acceptance prediction."""
+def get_base_metrics(sdn, is_neighbor, fog, edge):
+    m = sdn.get_metrics(edge.id, fog) if not is_neighbor else fog.sdn.get_metrics(edge.id, fog)
+    u = get_utility(m["norm_delay"], m["norm_energy"], m["norm_rel"], m["norm_cost"], edge.weights)
+    if is_neighbor:
+        u = u * (1.0 - CROSS_DOMAIN_PENALTY)
+    return m, u
+
+def policy_RANDOM(sdn, edge, local_fogs, neighbor_fogs, t):
+    search_space = get_search_space(local_fogs, neighbor_fogs)
+    fog, is_neighbor = random.choice(search_space)
+    m, u = get_base_metrics(sdn, is_neighbor, fog, edge)
+    return fog, u, 1.0
+
+def policy_GREEDY(sdn, edge, local_fogs, neighbor_fogs, t):
+    search_space = get_search_space(local_fogs, neighbor_fogs)
     best_fog, best_utility = None, -float('inf')
-    for fog in available_fogs:
-        m = edge.fog_metrics[fog.id]
-        u = get_utility(m["norm_delay"], m["norm_energy"], m["norm_rel"], m["norm_cost"], edge.weights, m["hops"])
-        if u > best_utility:
+    
+    for fog, is_neighbor in search_space:
+        m, u = get_base_metrics(sdn, is_neighbor, fog, edge)
+        if u > best_utility and u >= MIN_UTILITY_THRESHOLD:
             best_utility, best_fog = u, fog
-    return best_fog, best_utility, 1.0
+            
+    return best_fog, max(0, best_utility), 1.0
 
-def policy_BLM_TS(available_fogs, edge):
-    """Thompson Sampling baseline using Beta(successes+1, failures+1)."""
-    best_fog, best_score, best_utility, best_prob = None, -float('inf'), 0, 0
-    for fog in available_fogs:
-        m = edge.fog_metrics[fog.id]
-        u = get_utility(m["norm_delay"], m["norm_energy"], m["norm_rel"], m["norm_cost"], edge.weights, m["hops"])
-        
+def policy_BLM_TS(sdn, edge, local_fogs, neighbor_fogs, t):
+    search_space = get_search_space(local_fogs, neighbor_fogs)
+    best_fog, best_score, best_utility = None, -float('inf'), 0
+    
+    for fog, is_neighbor in search_space:
+        m, u = get_base_metrics(sdn, is_neighbor, fog, edge)
         alpha_ts = m["successes"] + 1
         beta_ts = m["failures"] + 1
         sampled_prob = random.betavariate(alpha_ts, beta_ts)
         
-        if (u * sampled_prob) > best_score:
-            best_score, best_fog, best_utility, best_prob = (u * sampled_prob), fog, u, sampled_prob
-    return best_fog, best_utility, best_prob
+        score = u * sampled_prob
+        if score > best_score and score >= MIN_UTILITY_THRESHOLD:
+            best_score, best_fog, best_utility = score, fog, u
+            
+    return best_fog, max(0, best_utility), 1.0
 
-def policy_ORIGINAL_DL_MATCH(available_fogs, edge, t, current_coeffs, epsilon):
-    """Original DL-MATCH: U_ij(t) = D^{-1} - C, with logistic acceptance estimation."""
-    if random.random() < epsilon:
-        best_fog = random.choice(available_fogs)
-        m = edge.fog_metrics[best_fog.id]
-        raw_utility = (1.0 / (m["delay"] + 1e-5)) - best_fog.cost
-        try:
-            u = 1 / (1 + math.exp(-raw_utility))
-        except OverflowError:
-            u = 0 if raw_utility < 0 else 1
-        return best_fog, u, 0.5
+def policy_ORIGINAL_DL_MATCH(sdn, edge, local_fogs, neighbor_fogs, t, epsilon):
+    search_space = get_search_space(local_fogs, neighbor_fogs)
+    
+    if random.random() < epsilon and search_space:
+        fog, is_neighbor = random.choice(search_space)
+        m, u = get_base_metrics(sdn, is_neighbor, fog, edge)
+        return fog, u, 0.5
         
     best_fog, best_score, best_utility, best_prob = None, -float('inf'), 0, 0
-    for fog in available_fogs:
-        m = edge.fog_metrics[fog.id]
-        last_time = edge.interaction_history.get(fog.id, -1)
-        time_passed = (t - last_time) if last_time != -1 else 10 
+    for fog, is_neighbor in search_space:
+        m = sdn.get_metrics(edge.id, fog) if not is_neighbor else fog.sdn.get_metrics(edge.id, fog)
         
-        # Paper's utility formula: U_ij(t) = D_ij^{-1}(t) - C_ij(t)
-        raw_utility = (1.0 / (m["delay"] + 1e-5)) - fog.cost
+        # Evaluate D^-1 - C strictly through mathematically bounded domain coordinates
+        cost_penalty = 1.0 - m["norm_cost"] 
+        raw_utility = m["norm_delay"] - cost_penalty
         try:
-            u = 1 / (1 + math.exp(-raw_utility))
+            u_orig = 1 / (1 + math.exp(-raw_utility))
         except OverflowError:
-            u = 0 if raw_utility < 0 else 1
+            u_orig = 0 if raw_utility < 0 else 1
             
-        p = get_acceptance(u, m["last_pi"], fog.resources_left, time_passed, current_coeffs, temporal_decay=False)
-        if (u * p) > best_score:
-            best_score, best_fog, best_utility, best_prob = (u * p), fog, u, p
+        if is_neighbor:
+            u_orig = u_orig * (1.0 - CROSS_DOMAIN_PENALTY)
+            
+        time_passed = (t - m["last_time"]) if m["last_time"] > 0 else 10
+        coeffs = sdn.domain_coeffs if not is_neighbor else fog.sdn.domain_coeffs
+        p = get_acceptance(u_orig, m["last_pi"], fog.resources_left, time_passed, coeffs, temporal_decay=False)
+        
+        # ORIGINAL explicitly uses its own bounds
+        if (u_orig * p) > best_score:
+            best_score, best_fog, best_utility, best_prob = (u_orig * p), fog, u_orig, p
+            
     return best_fog, best_utility, best_prob
 
-def policy_DRL(available_fogs, edge, t, max_sdn_fogs):
-    """DQN baseline with fixed-dimension zero-padded state and action masking."""
+def policy_DRL(sdn, edge, local_fogs, neighbor_fogs, t, max_total_fogs):
     global _drl_agent, _drl_optimizer, _last_state, _last_action
     
-    state_size = (4 * max_sdn_fogs) + 4
+    search_space = get_search_space(local_fogs, neighbor_fogs)
+    state_size = (4 * max_total_fogs) + 4
     
     if _drl_agent is None or _drl_agent.fc1.in_features != state_size:
-        _drl_agent = DQN(state_size, max_sdn_fogs).to(device)
+        _drl_agent = DQN(state_size, max_total_fogs).to(device)
         _drl_optimizer = optim.Adam(_drl_agent.parameters(), lr=0.01)
         _replay_buffer.clear()
         
     epsilon_drl = max(0.05, 1.0 - (t / 400.0))
-    
-    # Zero-padded state: each fog occupies a fixed position by ID
     current_state = [0.0] * state_size
     current_state[-4:] = [w / 10.0 for w in edge.weights]
     
     valid_actions = []
-    for fog in available_fogs:
-        m = edge.fog_metrics[fog.id]
+    for fog, is_neighbor in search_space:
+        m, u = get_base_metrics(sdn, is_neighbor, fog, edge)
         base = fog.id * 4
         current_state[base:base+4] = [m["norm_delay"], m["norm_energy"], m["norm_cost"], m["norm_rel"]]
         valid_actions.append(fog.id)
@@ -131,26 +146,29 @@ def policy_DRL(available_fogs, edge, t, max_sdn_fogs):
     state_tensor = torch.FloatTensor(current_state).to(device)
     _last_state = state_tensor
     
-    if random.random() < epsilon_drl:
+    if random.random() < epsilon_drl and valid_actions:
         action_idx = random.choice(valid_actions)
     else:
         with torch.no_grad():
             q_values = _drl_agent(state_tensor)
-            mask = torch.full((max_sdn_fogs,), -float('inf')).to(device)
+            mask = torch.full((max_total_fogs,), -float('inf')).to(device)
             for a in valid_actions:
-                mask[a] = 0
+                if a < max_total_fogs:
+                    mask[a] = 0
             action_idx = torch.argmax(q_values + mask).item()
             
     _last_action = action_idx
-    best_fog = next((f for f in available_fogs if f.id == action_idx), random.choice(available_fogs))
-    
-    m = edge.fog_metrics[best_fog.id]
-    best_utility = get_utility(m["norm_delay"], m["norm_energy"], m["norm_rel"], m["norm_cost"], edge.weights, m["hops"])
-    
-    return best_fog, best_utility, 1.0
+    best_fog = next((f for f, _ in search_space if f.id == action_idx), None)
+    if not best_fog and search_space:
+        best_fog, _ = random.choice(search_space)
+        
+    if best_fog:
+        is_neighbor = best_fog not in local_fogs
+        m, best_utility = get_base_metrics(sdn, is_neighbor, best_fog, edge)
+        return best_fog, best_utility, 1.0
+    return None, 0, 0
 
 def train_DRL(outcome, best_utility):
-    """Train DQN from replay buffer using vectorized batch updates."""
     global _drl_agent, _drl_optimizer, _last_state, _last_action, _replay_buffer
     if _drl_agent is None or _last_state is None:
         return
@@ -176,63 +194,65 @@ def train_DRL(outcome, best_utility):
 
 logging.getLogger("pyswarms").setLevel(logging.CRITICAL)
 
-def policy_PSO(available_fogs, edge):
-    """Particle Swarm Optimization baseline applied to discrete fog selection."""
-    # Senior Optimization: Utilities are static within the timeslot. 
-    # Evaluate O(N) exactly once before PSO runs, rather than O(N * par * iter) inside loop.
-    utils_cache = np.array([
-        get_utility(edge.fog_metrics[f.id]["norm_delay"], edge.fog_metrics[f.id]["norm_energy"],
-                    edge.fog_metrics[f.id]["norm_rel"], edge.fog_metrics[f.id]["norm_cost"],
-                    edge.weights, edge.fog_metrics[f.id]["hops"])
-        for f in available_fogs
-    ])
+def policy_PSO(sdn, edge, local_fogs, neighbor_fogs, t):
+    search_space = get_search_space(local_fogs, neighbor_fogs)
+    if not search_space: return None, 0, 0
+    
+    utils_cache = []
+    for fog, is_neighbor in search_space:
+        m, u = get_base_metrics(sdn, is_neighbor, fog, edge)
+        utils_cache.append(u)
+    utils_cache = np.array(utils_cache)
 
     def fitness_func(positions):
-        # Fully Vectorized fitness mapping utilizing NumPy
-        idx_array = np.nan_to_num(positions[:, 0], nan=np.random.randint(0, len(available_fogs)))
-        idx_array = np.clip(np.round(idx_array), 0, len(available_fogs)-1).astype(int)
+        idx_array = np.nan_to_num(positions[:, 0], nan=np.random.randint(0, len(search_space)))
+        idx_array = np.clip(np.round(idx_array), 0, len(search_space)-1).astype(int)
         return -utils_cache[idx_array]
 
     options = {'c1': 0.5, 'c2': 0.3, 'w': 0.9}
-    bounds = (np.array([0.0]), np.array([float(len(available_fogs)-1)]))
+    bounds = (np.array([0.0]), np.array([float(len(search_space)-1)]))
     optimizer = ps.single.GlobalBestPSO(n_particles=10, dimensions=1, options=options, bounds=bounds, velocity_clamp=(-1.0, 1.0))
     best_cost, best_pos = optimizer.optimize(fitness_func, iters=10, verbose=False)
     
-    action_idx = int(np.clip(np.round(np.nan_to_num(best_pos[0], nan=0)), 0, len(available_fogs)-1))
-    best_fog = available_fogs[action_idx]
+    action_idx = int(np.clip(np.round(np.nan_to_num(best_pos[0], nan=0)), 0, len(search_space)-1))
+    best_fog, _ = search_space[action_idx]
+    best_utility = utils_cache[action_idx]
     
-    return best_fog, utils_cache[action_idx], 1.0
+    if best_utility >= MIN_UTILITY_THRESHOLD:
+        return best_fog, best_utility, 1.0
+    return None, 0, 0
 
-def policy_AC_DL_MATCH(available_fogs, edge, t, current_coeffs, epsilon):
-    """AC-DL-MATCH: context-aware utility with k-hop penalty, temporal decay, and distributed learning."""
-    if random.random() < epsilon:
-        best_fog = random.choice(available_fogs)
-        m = edge.fog_metrics[best_fog.id]
-        best_utility = get_utility(m["norm_delay"], m["norm_energy"], m["norm_rel"], m["norm_cost"], edge.weights, m["hops"])
-        return best_fog, best_utility, 0.5
+def policy_AC_DL_MATCH(sdn, edge, local_fogs, neighbor_fogs, t, epsilon, temporal_decay=True, use_lr=True):
+    search_space = get_search_space(local_fogs, neighbor_fogs)
+    
+    if random.random() < epsilon and search_space:
+        fog, is_neighbor = random.choice(search_space)
+        m, u = get_base_metrics(sdn, is_neighbor, fog, edge)
+        return fog, u, 0.5
         
     best_fog, best_score, best_utility, best_prob = None, -float('inf'), 0, 0
-    for fog in available_fogs:
-        last_time = edge.interaction_history.get(fog.id, -1)
-        time_passed = (t - last_time) if last_time != -1 else 10 
-        m = edge.fog_metrics[fog.id]
+    for fog, is_neighbor in search_space:
+        m, u = get_base_metrics(sdn, is_neighbor, fog, edge)
         
-        u = get_utility(m["norm_delay"], m["norm_energy"], m["norm_rel"], m["norm_cost"], edge.weights, m["hops"])
-        p = get_acceptance(u, m["last_pi"], fog.resources_left, time_passed, current_coeffs, temporal_decay=True)
+        if use_lr:
+            time_passed = (t - m["last_time"]) if m["last_time"] > 0 else 10 
+            coeffs = sdn.domain_coeffs if not is_neighbor else fog.sdn.domain_coeffs
+            p = get_acceptance(u, m["last_pi"], fog.resources_left, time_passed, coeffs, temporal_decay=temporal_decay)
+        else:
+            p = 1.0
         
         if (u * p) > best_score:
             best_score, best_fog, best_utility, best_prob = (u * p), fog, u, p
             
     return best_fog, best_utility, best_prob
 
-def policy_MV_UCB(available_fogs, edge, t):
-    """UCB1 baseline: selects fog maximizing empirical reward + exploration bonus."""
-    best_fog, best_score, best_utility, best_prob = None, -float('inf'), 0, 0
+def policy_MV_UCB(sdn, edge, local_fogs, neighbor_fogs, t):
+    search_space = get_search_space(local_fogs, neighbor_fogs)
+    best_fog, best_score, best_utility = None, -float('inf'), 0
     C = 1.5
     
-    for fog in available_fogs:
-        m = edge.fog_metrics[fog.id]
-        u = get_utility(m["norm_delay"], m["norm_energy"], m["norm_rel"], m["norm_cost"], edge.weights, m["hops"])
+    for fog, is_neighbor in search_space:
+        m, u = get_base_metrics(sdn, is_neighbor, fog, edge)
         
         n_pulls = m["successes"] + m["failures"]
         if n_pulls == 0:
@@ -243,28 +263,31 @@ def policy_MV_UCB(available_fogs, edge, t):
             ucb_bonus = C * math.sqrt(math.log(t) / n_pulls)
             
         score = empirical_reward + ucb_bonus
-        if score > best_score:
-            best_score, best_fog, best_utility, best_prob = score, fog, u, 1.0
+        if score > best_score and u >= MIN_UTILITY_THRESHOLD:
+            best_score, best_fog, best_utility = score, fog, u
             
-    return best_fog, best_utility, best_prob
+    return best_fog, max(0, best_utility), 1.0
 
-def run_policy(policy_name, available_fogs, edge, t, current_coeffs, epsilon, max_sdn_fogs):
-    """Dispatch to the appropriate policy function."""
+def run_policy(policy_name, sdn, edge, local_fogs, neighbor_fogs, t, epsilon, max_total_fogs):
     if policy_name == "RANDOM":
-        return policy_RANDOM(available_fogs, edge)
+        return policy_RANDOM(sdn, edge, local_fogs, neighbor_fogs, t)
     elif policy_name == "GREEDY":
-        return policy_GREEDY(available_fogs, edge)
+        return policy_GREEDY(sdn, edge, local_fogs, neighbor_fogs, t)
     elif policy_name == "BLM_TS":
-        return policy_BLM_TS(available_fogs, edge)
+        return policy_BLM_TS(sdn, edge, local_fogs, neighbor_fogs, t)
     elif policy_name == "MV_UCB":
-        return policy_MV_UCB(available_fogs, edge, t)
+        return policy_MV_UCB(sdn, edge, local_fogs, neighbor_fogs, t)
     elif policy_name == "ORIGINAL_DL_MATCH":
-        return policy_ORIGINAL_DL_MATCH(available_fogs, edge, t, current_coeffs, epsilon)
+        return policy_ORIGINAL_DL_MATCH(sdn, edge, local_fogs, neighbor_fogs, t, epsilon)
     elif policy_name == "DRL":
-        return policy_DRL(available_fogs, edge, t, max_sdn_fogs)
+        return policy_DRL(sdn, edge, local_fogs, neighbor_fogs, t, max_total_fogs)
     elif policy_name == "META_PSO":
-        return policy_PSO(available_fogs, edge)
+        return policy_PSO(sdn, edge, local_fogs, neighbor_fogs, t)
     elif policy_name == "AC_DL_MATCH":
-        return policy_AC_DL_MATCH(available_fogs, edge, t, current_coeffs, epsilon)
+        return policy_AC_DL_MATCH(sdn, edge, local_fogs, neighbor_fogs, t, epsilon)
+    elif policy_name == "AC_NO_LR":
+        return policy_AC_DL_MATCH(sdn, edge, local_fogs, neighbor_fogs, t, epsilon, use_lr=False)
+    elif policy_name == "AC_NO_DECAY":
+        return policy_AC_DL_MATCH(sdn, edge, local_fogs, neighbor_fogs, t, epsilon, temporal_decay=False)
     else:
-        raise ValueError(f"Unknown benchmarking policy requested: {policy_name}")
+        raise ValueError(f"Unknown policy: {policy_name}")

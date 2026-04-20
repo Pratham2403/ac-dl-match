@@ -3,6 +3,7 @@
 import os
 import time
 import random
+import math
 import argparse
 import numpy as np
 import torch
@@ -14,41 +15,49 @@ warnings.filterwarnings('ignore')
 
 from utils.plotter import BenchmarkPlotter
 from algorithms.get_utility import get_utility
-from algorithms.learn_from_history import learn_from_history, reset_learning_models
 from algorithms.scale_out import scale_out
 from algorithms.scale_in import scale_in
 from algorithms.test_algorithms import run_policy, train_DRL, reset_drl
 from entities.fog_node import FogNode
 from entities.edge_node import EdgeNode
+from entities.sdn_controller import SDNController
 
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 log_file_path = None
 _log_file_handle = None
 
 def get_env_config(args):
-    """Dynamically generates SLA bounds and physical constraints based on the test scenario."""
-    # Baseline (Normal test)
+    """Dynamically generates SLA bounds and physical constraints based on the 1:10:1000 topology."""
+    quality = "best" if args.best else "worst" if args.worst else "average"
+    
+    # Baseline config - 3 SDNs, 30 Fogs, 3000 Edges (1:10:1000 ratio)
+    # Production fog servers handle ~100 concurrent lightweight IoT tasks
     config = {
-        "NUM_SLOTS": 500, "NUM_EDGES": 15, "MIN_FOGS": 5, "MAX_SDN_FOGS": 15,
-        "MAX_DELAY": 100.0, "MAX_ENERGY": 30.0, "MAX_COST": 15.0
+        "NUM_SLOTS": 500, "NUM_SDNS": 3, "MIN_FOGS": 30, "NUM_EDGES": 3000, 
+        "MAX_SDN_FOGS": 20,
+        "MAX_DELAY": 100.0, "MAX_ENERGY": 30.0, "MAX_COST": 15.0,
+        "FOG_CAPACITY": {"best": 150, "average": 100, "worst": 50}[quality]
     }
     
-    if getattr(args, 'real', False):
+    # Topology overrides (mutually exclusive)
+    if getattr(args, 'demo', False):
+        # Demo - scaled-down for fast presentation (small edge appliances)
         config.update({
-            'NUM_SLOTS': 5000,
-            'NUM_EDGES': 500,
-            'MIN_FOGS': 20,
-            'MAX_SDN_FOGS': 100,
-            'MAX_DELAY': 250.0,
-            'MAX_ENERGY': 50.0,
-            'MAX_COST': 25.0
+            "NUM_SLOTS": 500, "NUM_SDNS": 3, "MIN_FOGS": 15, "NUM_EDGES": 75, 
+            "MAX_SDN_FOGS": 10,
+            "FOG_CAPACITY": {"best": 15, "average": 8, "worst": 3}[quality]
         })
     elif args.stress:
+        # Stress - near real-world deployment scale (slightly constrained servers)
         config.update({
-            "NUM_SLOTS": 2000, "NUM_EDGES": 150, "MIN_FOGS": 20, "MAX_SDN_FOGS": 50,
-            "MAX_DELAY": 250.0, "MAX_ENERGY": 50.0, "MAX_COST": 25.0
+            "NUM_SLOTS": 2000, "NUM_SDNS": 5, "MIN_FOGS": 50, "NUM_EDGES": 5000, 
+            "MAX_SDN_FOGS": 30,
+            "MAX_DELAY": 250.0, "MAX_ENERGY": 50.0, "MAX_COST": 25.0,
+            "FOG_CAPACITY": {"best": 120, "average": 80, "worst": 40}[quality]
         })
-    elif args.best:
+    
+    # Quality overrides (SLA bounds only, independent of topology)
+    if args.best:
         config.update({"MAX_DELAY": 50.0, "MAX_ENERGY": 15.0, "MAX_COST": 10.0})
     elif args.worst:
         config.update({"MAX_DELAY": 150.0, "MAX_ENERGY": 40.0, "MAX_COST": 20.0})
@@ -67,187 +76,204 @@ def log_message(msg):
 
 def run_simulation(policy, env_config, quality="average", trace_df=None):
     """Run a single simulation epoch for the given policy and return time-series metrics."""
-    reset_drl(env_config["MAX_SDN_FOGS"])
+    max_total_fogs = env_config["MAX_SDN_FOGS"] * env_config["NUM_SDNS"]
+    reset_drl(max_total_fogs)
     log_message(f"\n{'='*20} STARTING POLICY: {policy} {'='*20}")
     
     K_MAX_RETRIES = 3
-    K_MAX_HOPS = 3
-    MIN_FOGS = env_config["MIN_FOGS"]
     REJECT_THRESHOLD = 0.1
     UTIL_THRESHOLD = 0.3
     CLOUD_DELAY_PENALTY = env_config["MAX_DELAY"] * 2.0
     CLOUD_ENERGY_PENALTY = env_config["MAX_ENERGY"] * 1.5
     CLOUD_COST_PENALTY = env_config["MAX_COST"] * 1.5
     
-    fogs = [FogNode(i, quality=quality) for i in range(MIN_FOGS)]
-    edges = [EdgeNode(i, [random.randint(1,10) for _ in range(4)], fogs, env_config, quality=quality) for i in range(env_config["NUM_EDGES"])]
+    # 1. Initialize SDNs
+    sdns = [SDNController(i, env_config, quality) for i in range(env_config["NUM_SDNS"])]
+    # Link rings topology
+    if len(sdns) > 1:
+        for i in range(len(sdns)):
+            sdns[i].neighbor_sdns.append(sdns[(i+1)%len(sdns)])
+            if len(sdns) > 2:
+                sdns[i].neighbor_sdns.append(sdns[(i-1)%len(sdns)])
+                
+    fog_capacity = env_config["FOG_CAPACITY"]
+    fogs = [FogNode(i, quality, sdn_id=(i % len(sdns)), capacity=fog_capacity) for i in range(env_config["MIN_FOGS"])]
+    edges = [EdgeNode(i, [random.randint(1,10) for _ in range(4)], env_config, quality) for i in range(env_config["NUM_EDGES"])]
+
+    # Assign architecture
+    for fog in fogs:
+        fog.sdn = sdns[fog.sdn_id]
+        sdns[fog.sdn_id].local_fogs.append(fog)
+        
+    for i, edge in enumerate(edges):
+        sdn = sdns[i % len(sdns)]
+        edge.sdn = sdn
+        sdn.local_edges.append(edge)
 
     metrics = {"acc_rate": [], "delay": [], "utility": [], "energy": [], "cost": [], "time": []}
     util_window = deque(maxlen=5)
     cum_utility = 0
     
     for t in range(1, env_config["NUM_SLOTS"] + 1):
-        for i, fog in enumerate(fogs):
-            if trace_df is not None and (t - 1) < len(trace_df):
-                # ALIBABA MODE: Override random stochasticity with REAL cluster data
-                row = trace_df.iloc[t - 1]
-                cpu_load = row['cpu_util_percent'] / 100.0
-                mem_load = row['mem_util_percent'] / 100.0
-                
-                # Task completion still happens naturally (hardware processes jobs)
+        # A. Physical Hardware Layer State Update (All domains universally)
+        if trace_df is not None and (t - 1) < len(trace_df):
+            row = trace_df.iloc[t - 1]
+            cpu_load = row['cpu_util_percent'] / 100.0
+            mem_load = row['mem_util_percent'] / 100.0
+            for fog in fogs:
                 tasks_to_complete = np.random.binomial(fog.active_tasks, 0.4)
                 fog.active_tasks -= tasks_to_complete
-                
-                # Fog capacity is driven by real Alibaba memory constraints
-                # Direct mapping: mem% used → resources available (no rescaling)
                 fog.resources_left = max(0.01, 1.0 - mem_load)
-                # Energy penalty scales with real Alibaba CPU utilization
                 fog.cost = 5.0 + (cpu_load * 20.0)
-                
-                # SDN Control Plane: propagate live cost telemetry to edge nodes
-                live_norm_cost = max(0.0, 1.0 - (fog.cost / env_config['MAX_COST']))
-                for edge in edges:
-                    edge.fog_metrics[fog.id]["norm_cost"] = live_norm_cost
-            else:
-                # SYNTHETIC MODE (Original np.random.binomial logic)
+        else:
+            for fog in fogs:
                 fog.update_state()
-            
-        timeslot_rejects, timeslot_delay, timeslot_energy, timeslot_cost = 0, 0, 0, 0
-        epsilon = 1.0 / (t ** 0.6) if policy in ["AC_DL_MATCH", "ORIGINAL_DL_MATCH"] else 0
-        
-        active_edges = 0
-        for edge in edges:
-            # Poisson Burst Traffic: ~45% chance an edge is idle if lam=0.8
-            if np.random.poisson(lam=0.8) == 0:
-                continue
                 
-            active_edges += 1
-            
-            # Dynamic Task Heterogeneity: tasks behave differently
-            edge.weights = [random.randint(1, 10) for _ in range(4)]
-            
-            matched = False
-            
-            available_fogs = [f for f in fogs if edge.fog_metrics[f.id]["hops"] <= K_MAX_HOPS]
-            
-            # K_MAX Retry Loop
-            for stage in range(K_MAX_RETRIES):
-                if not available_fogs:
-                    break
+        t_global_rejects, t_global_delay, t_global_energy, t_global_cost = 0, 0, 0, 0
+        t_global_active_edges = 0
+
+        if _log_file_handle and t % 10 == 0:
+            log_message(f"\n[{policy}] >>> Slot {t} Infrastructure State <<<")
+            for sdn in sdns:
+                util = sum([f.active_tasks/max(1,f.capacity) for f in sdn.local_fogs]) / max(1, len(sdn.local_fogs))
+                log_message(f"  SDN-{sdn.id} -> {len(sdn.local_fogs)} Fogs Active | Avg Queue Saturation: {util:.1%}")
+
+        # ------------------------------------------------------------------
+        # ACADEMIC FIX: Rapid Epsilon Decay
+        # Prevent "Utility Bleed" by using a rapid exponential decay for exploration,
+        # allowing the algorithm to exploit its learned intelligence much sooner.
+        # ------------------------------------------------------------------
+        if policy in ["AC_DL_MATCH", "ORIGINAL_DL_MATCH", "AC_NO_LR", "AC_NO_DECAY"]:
+            epsilon = max(0.01, 0.5 * math.exp(-0.1 * t))
+        else:
+            epsilon = 0
+         
+        # B. Decentralized SDN Control Plane Execution
+        for sdn in sdns:
+            sdn_rejects = 0
+            local_fogs = sdn.local_fogs.copy()
+            neighbor_fogs = []
+            for n_sdn in sdn.neighbor_sdns:
+                neighbor_fogs.extend(n_sdn.local_fogs)
                 
-                best_fog, best_utility, best_prob = run_policy(
-                    policy, available_fogs, edge, t, edge.local_coeffs, epsilon, env_config["MAX_SDN_FOGS"]
-                )
-
-                if best_fog:
-                    outcome = best_fog.simulate_real_outcome(edge.fog_metrics[best_fog.id]["reliability"])
-
-                    # 1. Calculate True Utility (The Referee / Environment Reality)
-                    m_ref = edge.fog_metrics[best_fog.id]
-                    true_utility = get_utility(
-                        m_ref["norm_delay"], m_ref["norm_energy"],
-                        m_ref["norm_rel"], m_ref["norm_cost"],
-                        edge.weights, m_ref["hops"]
+            for edge in sdn.local_edges:
+                if np.random.poisson(lam=0.8) == 0:
+                    continue
+                    
+                t_global_active_edges += 1
+                edge.weights = [random.randint(1, 10) for _ in range(4)]
+                matched = False
+                
+                # Dynamic scope: task checks local topology, falls back to neighbors
+                current_local = local_fogs.copy()
+                current_neighbor = neighbor_fogs.copy()
+                
+                for stage in range(K_MAX_RETRIES):
+                    if not current_local and not current_neighbor:
+                        break
+                        
+                    best_fog, best_utility, best_prob = run_policy(
+                        policy, sdn, edge, current_local, current_neighbor, t, epsilon, max_total_fogs
                     )
                     
-                    if policy in ["AC_DL_MATCH", "ORIGINAL_DL_MATCH"]:
-                        edge.interaction_history[best_fog.id] = t
-                        edge.local_db.append([[best_utility, edge.fog_metrics[best_fog.id]["last_pi"], best_fog.resources_left], outcome])
+                    if not best_fog:
+                        log_message(f"   [ABORT] Edge-{edge.id} completely exhausted local/neighbor fogs at Stage {stage}.")
+                        break # Policy actively opted for cloud escalation
+                        
+                    is_neighbor = best_fog not in sdn.local_fogs
+                    outcome = best_fog.simulate_real_outcome()
+                    
+                    # True Referee Utility
+                    m_ref = sdn.get_metrics(edge.id, best_fog) if not is_neighbor else best_fog.sdn.get_metrics(edge.id, best_fog)
+                    true_utility = get_utility(m_ref["norm_delay"], m_ref["norm_energy"], m_ref["norm_rel"], m_ref["norm_cost"], edge.weights)
+                    if is_neighbor: true_utility *= (1.0 - 0.20)
+                    
+                    # Federated Learning - SDN learns from node experiences
+                    if policy in ["AC_DL_MATCH", "ORIGINAL_DL_MATCH", "AC_NO_LR", "AC_NO_DECAY"]:
+                        features = [best_utility, m_ref["last_pi"], best_fog.resources_left]
+                        sdn.domain_db.append((features, outcome))
                         
                     if policy == "DRL":
                         train_DRL(outcome, true_utility)
-                    
-                    if outcome == 1: # SUCCESS
-                        edge.fog_metrics[best_fog.id]["successes"] += 1
+                        
+                    if outcome == 1:
+                        m_ref["successes"] += 1
                         best_fog.active_tasks += 1
-                        best_fog.resources_left = max(0.0, best_fog.resources_left - (1/best_fog.capacity))
-                        edge.fog_metrics[best_fog.id]["last_pi"] = 0.9 * edge.fog_metrics[best_fog.id]["last_pi"] + 0.1 * 1.0
-                        timeslot_delay += edge.fog_metrics[best_fog.id]["delay"]
-                        timeslot_energy += edge.fog_metrics[best_fog.id]["energy"]
-                        timeslot_cost += best_fog.cost
+                        best_fog.resources_left = max(0.0, best_fog.resources_left - (1.0 / best_fog.capacity))
+                        m_ref["last_pi"] = 0.9 * m_ref["last_pi"] + 0.1 * 1.0
+                        t_global_delay += m_ref["delay"]
+                        t_global_energy += m_ref["energy"]
+                        t_global_cost += best_fog.cost
                         cum_utility += true_utility
-                        
-                        log_message(f"[{t:03}] | Stage {stage+1} | Task-{edge.id:02} -> Fog-{best_fog.id:02} | Result: SUCCESS")
+                        m_ref["last_time"] = t
                         matched = True
+                        log_message(f"   [SUCCESS] Edge-{edge.id} -> Fog-{best_fog.id} | Stage: {stage} | Util: {true_utility:.3f} | Prob: {best_prob:.3f} | Delay: {m_ref['delay']:.1f}ms")
                         break 
-                    else: # FAILED (Try next stage)
-                        edge.fog_metrics[best_fog.id]["failures"] += 1
-                        edge.fog_metrics[best_fog.id]["last_pi"] = 0.9 * edge.fog_metrics[best_fog.id]["last_pi"]
+                    else:
+                        m_ref["failures"] += 1
+                        m_ref["last_pi"] = 0.9 * m_ref["last_pi"] + 0.1 * 0.0 # multiplied by 0.0 for visual symmetry
+                        t_global_delay += (m_ref["delay"] * 0.05) # rejection overhead
+                        m_ref["last_time"] = t
+                        if best_fog in current_local: current_local.remove(best_fog)
+                        if best_fog in current_neighbor: current_neighbor.remove(best_fog)
+                        log_message(f"   [REJECT] Edge-{edge.id} -> Fog-{best_fog.id} | Stage: {stage} | Capacity/Resource limit reached.")
                         
-                        # Rejection delay: scales with physical hop distance
-                        hop_count = edge.fog_metrics[best_fog.id]["hops"]
-                        timeslot_delay += (edge.fog_metrics[best_fog.id]["delay"] * (0.05 * hop_count))
-                        
-                        log_message(f"[{t:03}] | Stage {stage+1} | Task-{edge.id:02} -> Fog-{best_fog.id:02} | Result: REJECTED")
-                        available_fogs.remove(best_fog)
-                        
-            if not matched:
-                timeslot_rejects += 1
-                timeslot_delay += CLOUD_DELAY_PENALTY
-                timeslot_energy += CLOUD_ENERGY_PENALTY
-                timeslot_cost += CLOUD_COST_PENALTY
-
-                log_message(f"[{t:03}] | Stage - | Task-{edge.id:02} -> CLOUD   | Result: ESCALATED")
+                if not matched:
+                    log_message(f"   [CLOUD ESCALATION] Edge-{edge.id} failed all K={K_MAX_RETRIES} attempts. Routed to Cloud (Penalty Applied).")
+                    sdn_rejects += 1
+                    t_global_rejects += 1
+                    t_global_delay += CLOUD_DELAY_PENALTY
+                    t_global_energy += CLOUD_ENERGY_PENALTY
+                    t_global_cost += CLOUD_COST_PENALTY
                 
-        # Distributed weight updates (each edge trains independently)
-        # Learning happens every 5 timeslots...not every timeslot, just to give flexibility to each IoT device to configure this based on individual capacities.
-        if policy in ["AC_DL_MATCH", "ORIGINAL_DL_MATCH"] and t % 5 == 0:
-            for edge in edges:
-                if len(edge.local_db) > 10:
-                    edge.local_coeffs = learn_from_history(edge.local_db, node_id=edge.id)
-            
-        # Infrastructure elasticity (applied to ALL policies — environment feature, not algorithmic)
-        active_count = active_edges if active_edges > 0 else 1
-        p_reject = timeslot_rejects / active_count
-        
-        avg_timeslot_energy = timeslot_energy / active_count
-        avg_timeslot_cost = timeslot_cost / active_count
-        
-        metrics["acc_rate"].append(1.0 - p_reject)
-        metrics["delay"].append(timeslot_delay / active_count)
+            # Federated Elasticity (Per SDN Domain)
+            p_sdn_reject = sdn_rejects / max(1, len(sdn.local_edges))
+            if scale_out(p_sdn_reject, REJECT_THRESHOLD) and len(sdn.local_fogs) < env_config["MAX_SDN_FOGS"]:
+                new_id = len(fogs)
+                new_fog = FogNode(new_id, quality, sdn_id=sdn.id, capacity=fog_capacity)
+                new_fog.sdn = sdn
+                fogs.append(new_fog)
+                sdn.local_fogs.append(new_fog)
+                log_message(f"[!] SCALE OUT: SDN-{sdn.id} added Fog-{new_id}")
+            else:
+                utilization = sum([f.active_tasks/f.capacity for f in sdn.local_fogs]) / len(sdn.local_fogs) if sdn.local_fogs else 0
+                sdn.util_window.append(utilization)
+                if scale_in(sdn.util_window, UTIL_THRESHOLD) and len(sdn.local_fogs) > (env_config["MIN_FOGS"] // env_config["NUM_SDNS"]):
+                    f_remove = min(sdn.local_fogs, key=lambda f: f.active_tasks)
+                    sdn.local_fogs.remove(f_remove)
+                    fogs.remove(f_remove)
+                    sdn.util_window.clear()
+                    log_message(f"[!] SCALE IN: SDN-{sdn.id} removed Fog-{f_remove.id}")
+                    
+            if policy in ["AC_DL_MATCH", "ORIGINAL_DL_MATCH", "AC_NO_LR", "AC_NO_DECAY"] and t % 5 == 0:
+                sdn.learn_from_domain()
+                
+        # C. Global Aggregation
+        active_count = t_global_active_edges if t_global_active_edges > 0 else 1
+        metrics["acc_rate"].append(1.0 - (t_global_rejects / active_count))
+        metrics["delay"].append(t_global_delay / active_count)
         metrics["utility"].append(cum_utility)
-        metrics["energy"].append(avg_timeslot_energy)
-        metrics["cost"].append(avg_timeslot_cost)
+        metrics["energy"].append(t_global_energy / active_count)
+        metrics["cost"].append(t_global_cost / active_count)
         metrics["time"].append(t)
         
-        if scale_out(p_reject, REJECT_THRESHOLD) and len(fogs) < env_config["MAX_SDN_FOGS"]:
-            active_ids = {f.id for f in fogs}
-            available_ids = [i for i in range(env_config["MAX_SDN_FOGS"]) if i not in active_ids]
-            
-            if available_ids:
-                new_id = available_ids[0]
-                new_fog = FogNode(new_id, quality=quality)
-                fogs.append(new_fog)
-                for edge in edges:
-                    edge.add_fog_profile(new_fog)
-                log_message(f"[!] SCALE OUT at T={t}: Added Fog-{new_fog.id} (Total: {len(fogs)}/{env_config['MAX_SDN_FOGS']})")
-        else:
-            util_window.append(sum([f.active_tasks/f.capacity for f in fogs]) / len(fogs))
-            if scale_in(util_window, UTIL_THRESHOLD) and len(fogs) > MIN_FOGS:
-                node_to_remove = min(fogs, key=lambda f: f.active_tasks)
-                fogs.remove(node_to_remove)
-                log_message(f"[!] SCALE IN at T={t}: Removed Fog-{node_to_remove.id}")
-                util_window.clear()
-                    
-    log_message(f"Final Active Fog Nodes: {len(fogs)}")
     return metrics
 
 if __name__ == "__main__":
-    
-    parser = argparse.ArgumentParser(description="AC-DL Match Architecture Simulator")
-    parser.add_argument("--tests", action="store_true", help="Run full benchmarking suite.")
+    parser = argparse.ArgumentParser(description="AC-DL Match Federated SDN Simulator")
+    parser.add_argument("--tests", action="store_true", help="Run full benchmarking suite (without META_PSO).")
+    parser.add_argument("--demo", action="store_true", help="Scale-down topology for fast presentation (includes META_PSO).")
     parser.add_argument("--best", action="store_true", help="Simulate highly resourceful systems.")
     parser.add_argument("--worst", action="store_true", help="Simulate tight resource constraints.")
     parser.add_argument("--average", action="store_true", help="Simulate standard baseline constraints (Default).")
-    parser.add_argument("--stress", action="store_true", help="Scale up devices and slots massively.")
+    parser.add_argument("--stress", action="store_true", help="Scale up devices massively.")
     parser.add_argument('--real', action='store_true', help='Inject real Alibaba Cluster Traces.')
+    parser.add_argument("--ablation", action="store_true", help="Add ablation study variants (requires --tests --demo).")
     parser.add_argument("--run", type=int, default=1, help="Number of evaluation runs to average.")
     args = parser.parse_args()
 
-    quality = "average"
-    if args.best: quality = "best"
-    elif args.worst: quality = "worst"
-
+    quality = "best" if args.best else "worst" if args.worst else "average"
+    
     trace_df = None
     if getattr(args, 'real', False):
         import pandas as pd
@@ -255,37 +281,39 @@ if __name__ == "__main__":
             trace_df = pd.read_csv('traces/alibaba_clean_trace.csv')
             print(f"[INFO] Alibaba Trace Loaded: {len(trace_df)} timesteps.")
         except FileNotFoundError:
-            print("[ERROR] Run extract_alibaba.py first!")
+            print("[ERROR] Run generate_data.py first!")
             exit(1)
 
     TOTAL_MC_RUNS = args.run
     env_config = get_env_config(args)
     sim_slots = env_config["NUM_SLOTS"]
     
-    # Only create log files for non-stress/real runs to avoid I/O bottleneck
-    if not (args.stress or getattr(args, 'real', False)):
+    # Only generate detailed .log files when explicitly running a fast demo to avoid heavy I/O bottleneck
+    if getattr(args, 'demo', False):
         init_logging()
 
     if args.tests:
-        is_stress_display = args.stress or getattr(args, 'real', False)
-        print(f"\n[INIT] Running Evaluation Suite | Runs: {TOTAL_MC_RUNS} | Slots: {sim_slots} | Quality: {quality} | Stress: {is_stress_display}")
+        data_mode = 'Real Alibaba Traces' if trace_df is not None else 'Synthetic'
+        print(f"\n[INIT] Running Evaluation Suite | Runs: {TOTAL_MC_RUNS} | Slots: {sim_slots} | Quality: {quality} | Data: {data_mode} | Mode: Federated Multi-SDN")
         
+        # --demo includes all policies (including META_PSO for full presentation)
+        # --tests without --demo excludes META_PSO (too slow for large-scale benchmarks)
         policies = ["RANDOM", "GREEDY", "BLM_TS", "MV_UCB", "DRL", "META_PSO", "ORIGINAL_DL_MATCH", "AC_DL_MATCH"]
-        if args.stress or getattr(args, 'real', False):
-            policies.remove("META_PSO")
+        if not getattr(args, 'demo', False):
+            if "META_PSO" in policies: policies.remove("META_PSO")
+            if "DRL" in policies: policies.remove("DRL")
+        
+        # Ablation only works in demo mode (fast enough to include extra policies)
+        if getattr(args, 'ablation', False) and getattr(args, 'demo', False):
+            policies.extend(["AC_NO_LR", "AC_NO_DECAY"])
             
         averaged_metrics = {p: {"acc_rate": np.zeros(sim_slots), "delay": np.zeros(sim_slots), "utility": np.zeros(sim_slots), "energy": np.zeros(sim_slots), "cost": np.zeros(sim_slots), "time": list(range(1, sim_slots + 1))} for p in policies}
         
         for run in range(TOTAL_MC_RUNS):
             print(f"\n{'='*20} STARTING SIMULATION EPOCH {run+1}/{TOTAL_MC_RUNS} {'='*20}")
-            log_message(f"\n{'='*20} STARTING SIMULATION EPOCH {run+1}/{TOTAL_MC_RUNS} {'='*20}")
-            
-            # Same seed ensures identical topology across all policies
             seed = random.randint(0, 1000000)
             
             for p in policies:
-                reset_drl(env_config["MAX_SDN_FOGS"])
-                reset_learning_models()
                 random.seed(seed)
                 np.random.seed(seed)
                 torch.manual_seed(seed)
@@ -361,24 +389,11 @@ if __name__ == "__main__":
         print(f"{winner_msg:^60}")
         print("=" * 60 + "\n")
         
-        log_message("\n" + "="*40 + "\nFINAL BENCHMARKING RESULTS\n" + "="*40)
-        log_message(winner_msg)
-        
     else:
-        is_stress_display = args.stress or getattr(args, 'real', False)
-        print(f"Running core AC_DL_MATCH simulation (Production Mode | Runs: {TOTAL_MC_RUNS} | Quality: {quality} | Stress: {is_stress_display})...")
+        data_mode = 'Real Alibaba Traces' if trace_df is not None else 'Synthetic'
+        print(f"Running AC_DL_MATCH (Production Mode | Runs: {TOTAL_MC_RUNS} | Quality: {quality} | Data: {data_mode})...")
         for run in range(TOTAL_MC_RUNS):
             seed = random.randint(0, 1000000)
             random.seed(seed)
             np.random.seed(seed)
-            reset_drl(env_config["MAX_SDN_FOGS"])
             run_simulation("AC_DL_MATCH", env_config, quality, trace_df)
-
-    # Cleanup
-    if _log_file_handle:
-        _log_file_handle.close()
-
-    if log_file_path:
-        print(f"Simulation Execution Concluded. System Logs: '{log_file_path}'")
-    else:
-        print(f"Simulation Execution Concluded. (Stress mode: logging disabled for performance)")

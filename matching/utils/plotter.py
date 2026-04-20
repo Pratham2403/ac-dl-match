@@ -29,7 +29,9 @@ class BenchmarkPlotter:
             "DRL": "#8A2BE2",              # BlueViolet
             "MV_UCB": "#2E8B57",           # SeaGreen
             "META_PSO": "#FF8C00",         # DarkOrange
-            "AC_DL_MATCH": "#DC143C"       # Crimson (Highlight)
+            "AC_DL_MATCH": "#DC143C",       # Crimson (Highlight)
+            "AC_NO_LR": "#FF69B4",          # HotPink (Ablation)
+            "AC_NO_DECAY": "#CD5C5C"         # IndianRed (Ablation)
         }
         
         # IEEE requires distinct line styles for B&W printing
@@ -41,7 +43,9 @@ class BenchmarkPlotter:
             "MV_UCB": "dash",
             "DRL": "solid",
             "META_PSO": "dashdot",
-            "AC_DL_MATCH": "solid"
+            "AC_DL_MATCH": "solid",
+            "AC_NO_LR": "dot",
+            "AC_NO_DECAY": "dashdot"
         }
 
     def _save_figure(self, fig, filename):

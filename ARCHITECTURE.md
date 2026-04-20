@@ -291,97 +291,40 @@ q_ij^avail = 40 (out of 50 total)
 
 ---
 
-### 4. k-Hop Locality-Aware Utility
+### 4. Cross-Domain Federation Utility (AC-DL-MATCH)
 
-#### Distance Penalty
+#### Distributed SDN-Domain Migration Penalty
+
+Instead of computationally intensive k-hop searches across edges, the intelligent `SDN Controller` inherently isolates traffic to local domains. If `Utility` or `Acceptance Probabilities` fail locally, Tasks migrate East-West to an adjacent SDN Controller.
 
 ```
-U_ij^k-hop = {
-    U_ij^init × (1 - δ × h_ij / k_max)   if h_ij < k_max
-    0                                     if h_ij ≥ k_max
+U_ij^cross-domain = {
+    U_ij^init                           if F_j ∈ Domain_local
+    U_ij^init × (1.0 - PENALTY_CROSS)   if F_j ∈ Domain_neighbor
 }
 
 Where:
-- U_ij^init : Initial utility (from context-aware calculation)
-- h_ij ∈ ℕ : Network hop count between task T_i and fog node F_j
-- k_max ∈ ℕ : Maximum hop threshold (typically 2-3)
-- δ ∈ [0, 1] : Distance penalty coefficient (typically 0.8)
+- U_ij^init : Initial normalized utility
+- PENALTY_CROSS : 0.20 (20% routing utility drop standard for East-West WAN interconnect latency overhead)
 ```
 
-**Rationale**: Penalize far-away fog nodes to:
-1. Reduce latency (fewer hops = faster)
-2. Reduce computation (don't calculate utility for distant nodes)
-3. Encourage local processing
+**Rationale**: Provide federated elasticity without suffocating IoT execution cycles:
+1. IoT nodes are completely bypassed regarding topological graph complexity (Zero-Overhead).
+2. Local traffic stays within the immediate SDN broadcast domain.
+3. Adjacent SDN load-balancing inherently simulates WAN latency mathematically without fabricating nested hop counts.
 
 **Example**:
 
 ```
-U_ij^init = 1.974
-k_max = 3
-δ = 0.8
+U_ij^init = 0.85
+PENALTY_CROSS = 0.20
 
-Case 1: h_ij = 1 (one hop away)
-U_ij^k-hop = 1.974 × (1 - 0.8 × 1/3) 
-           = 1.974 × 0.733 
-           = 1.447
+Case 1: F_j is in the local SDN Domain
+U_ij^cross-domain = 0.85 
 
-Case 2: h_ij = 2 (two hops away)
-U_ij^k-hop = 1.974 × (1 - 0.8 × 2/3) 
-           = 1.974 × 0.467 
-           = 0.921
-
-Case 3: h_ij = 3 (three hops away)
-U_ij^k-hop = 1.974 × (1 - 0.8 × 3/3) 
-           = 1.974 × 0.2 
-           = 0.395
-
-Case 4: h_ij = 4 (beyond threshold)
-U_ij^k-hop = 0 (excluded from consideration)
-```
-
----
-
-#### Scalability Analysis
-
-**Complexity Reduction**:
-
-```
-Standard DL-MATCH:
-- Every task calculates utility for ALL fog nodes
-- Complexity: O(M × N)
-- Example: 1000 tasks × 100 fog nodes = 100,000 calculations
-
-AC-DL-MATCH (k-hop):
-- Every task calculates utility ONLY for nearby fog nodes
-- Complexity: O(M × k) where k << N
-- Example: 1000 tasks × 5 nearby nodes = 5,000 calculations
-- Speedup: 20× faster
-```
-
-**SDN Controller Design for k_max Hops**:
-
-```python
-class SDNController:
-    def __init__(self, domain_id, fog_nodes, topology_graph):
-        self.domain_id = domain_id
-        self.fog_nodes = fog_nodes  # List of fog nodes in this domain
-        self.G = topology_graph     # NetworkX graph
-        
-        # Precompute all-pairs shortest path distances
-        self.hop_distances = dict(nx.all_pairs_shortest_path_length(self.G))
-    
-    def get_nearby_fog_nodes(self, task_location, k_max=3):
-        """
-        Return fog nodes within k_max hops of task location.
-        
-        Returns: List[(fog_node_id, hop_count)]
-        """
-        nearby = []
-        for fog_node in self.fog_nodes:
-            hop_count = self.hop_distances[task_location][fog_node.id]
-            if hop_count <= k_max:
-                nearby.append((fog_node, hop_count))
-        return nearby
+Case 2: F_j is migrated across to Neighbor SDN Domain
+U_ij^cross-domain = 0.85 × (1 - 0.20) 
+                  = 0.68
 ```
 
 ---
@@ -440,7 +383,7 @@ Where:
 
 **Example**:
 ```
-Fog Node F_j: Q_j = 50 (max capacity)
+Fog Node F_j: Q_j = 100 (max capacity)
 
 Time slot observations (last 10 slots):
 [5, 8, 3, 7, 10, 6, 4, 9, 5, 3] tasks active
@@ -464,216 +407,82 @@ If sustained for θ_time = 10 slots:
 
 ---
 
-### 6. Cross-Domain Routing
+### 5. Multi-SDN Routing (Tiered Federation Architecture)
 
-**Decision Logic**:
+**Decision Logic Blueprint**:
 
 ```
-Local_Best_Utility = max_{F_j ∈ Domain_local} U_ij^k-hop
+Tier 1: Intradomain Match
+Local_Best = argmax(U_ij × p_ij), ∀ F_j ∈ Domain_local
+Execute Local Match if Local_Best exists
 
-Cross_Domain_Best_Utility = max_{F_j ∈ Domain_other} U_ij^k-hop
-
-IF (Local_Best_Utility < Cross_Domain_Best_Utility × Threshold_Factor):
-    Migrate task to cross-domain fog node
-ELSE:
-    Stay in local domain
+Tier 2: Interdomain (East-West) Match
+Neighbor_Best = argmax(U_ij × (1 - PENALTY_CROSS) × p_ij), ∀ F_j ∈ Domain_neighbor
+Execute Cross-Domain Migration Match if Local_Best failed (Queue Full)
+    
+Tier 3: Cloud Escalation
+IF Both Local and Neighbor completely exhaust all viable permutations (K=3 Retries):
+    Escalate to Cloud Datacenter (Apply massive physical penalties)
 ```
 
-**Threshold Factor**: Typically 0.8-0.9 (hysteresis to avoid oscillation)
+**The East-West Scaling Paradox**:
+During development, we discovered that implementing strict `MIN_UTILITY_THRESHOLD` floors on cross-domain traffic mathematically forces a "Synchronization Trap." If multiple edge nodes concurrently target the best local fog, the fog's queue instantly saturates (Thundering Herd). To survive, traffic must spill over to adjacent SDNs. However, because adjacent fogs carry a physical `PENALTY_CROSS`, an artificial utility threshold will rigidly reject these "degraded" neighbor fogs and instead escalate to the Cloud (which has effectively 0.0 utility). 
+To prevent this, AC-DL-MATCH evaluates traffic dynamically: **always take the absolute best organic matching score, and only fallback to the Cloud when physically out of localized bounds.**
 
-**Rationale**: Only migrate if cross-domain option is **significantly better** (not just marginally), to avoid frequent domain switches.
-
----
+**Rationale**: Provide strict fallback networks before eating the massive Cloud Round-Trip times.
 
 ## 🔄 Algorithm Phases
 
-### Phase 1: Initialization
+### Phase 1: SDN Federation Initialization
 
 ```python
-def initialize_system():
-    """
-    System startup: Load topology, initialize fog nodes, SDN controllers.
-    """
-    # 1. Load network topology from configuration
-    topology = load_topology_config("network_topology.json")
+def initialize_federated_system():
+    env_config = {"NUM_SDNS": 3, "NUM_FOGS": 30, "NUM_EDGES": 3000} # 1:10:1000 Ratio
     
-    # 2. Initialize fog nodes with capacities
-    fog_nodes = []
-    for config in topology['fog_nodes']:
-        fog_node = FogNode(
-            id=config['id'],
-            cpu_freq=config['cpu_freq'],
-            memory=config['memory'],
-            queue_capacity=config['queue_capacity'],
-            cost_per_mb=config['cost_per_mb'],
-            reliability=config['initial_reliability']
-        )
-        fog_nodes.append(fog_node)
+    # 1. Initialize SDNs 
+    sdns = [SDNController(i) for i in range(env_config["NUM_SDNS"])]
     
-    # 3. Initialize SDN controllers (one per domain)
-    sdn_controllers = []
-    for domain_config in topology['domains']:
-        sdn = SDNController(
-            domain_id=domain_config['id'],
-            fog_nodes=[f for f in fog_nodes if f.id in domain_config['fog_node_ids']],
-            topology_graph=build_graph(domain_config['edges'])
-        )
-        sdn_controllers.append(sdn)
-    
-    # 4. Initialize infrastructure orchestration
-    scale_out_manager = ScaleOutManager(
-        rejection_threshold=0.18,
-        cross_domain_threshold=0.45
-    )
-    
-    scale_in_manager = ScaleInManager(
-        utilization_threshold=0.25,
-        time_threshold=10
-    )
-    
-    return fog_nodes, sdn_controllers, scale_out_manager, scale_in_manager
+    # 2. Link SDNs into a Ring Routing Topology
+    for i in range(len(sdns)):
+        sdns[i].neighbor_sdns.append(sdns[(i+1) % len(sdns)])
+        sdns[i].neighbor_sdns.append(sdns[(i-1) % len(sdns)])
+        
+    # 3. Provision Fogs to local Domains
+    for i in range(env_config["NUM_FOGS"]):
+        target_sdn = i % len(sdns)
+        sdns[target_sdn].local_fogs.append(FogNode(i))
 ```
 
 ---
 
-### Phase 2: Task Arrival & Utility Calculation
+### Phase 2: Orchestration & Distributed Matching Execution
 
 ```python
-def handle_task_arrival(task, sdn_controllers, k_max=3):
-    """
-    When a task arrives, calculate utility for nearby fog nodes.
-    
-    Args:
-        task: Task object with (size, complexity, type)
-        sdn_controllers: List of SDN controllers
-        k_max: Maximum hop distance threshold
-    
-    Returns:
-        ranked_fog_nodes: List of (fog_node, utility) tuples sorted by utility
-    """
-    # 1. Identify task's local SDN domain
-    local_sdn = get_local_sdn_controller(task.source_location, sdn_controllers)
-    
-    # 2. Get nearby fog nodes (within k_max hops)
-    nearby_fog_nodes = local_sdn.get_nearby_fog_nodes(task.source_location, k_max)
-    
-    # 3. Calculate utility for each nearby fog node
-    utilities = []
-    for fog_node, hop_count in nearby_fog_nodes:
-        # 3a. Calculate base utility (context-aware)
-        U_base = calculate_context_aware_utility(
-            task=task,
-            fog_node=fog_node,
-            hop_count=hop_count
-        )
+def execute_matching_epoch(sdns, edges, t):
+    for sdn in sdns:
+        # Build global topology cache
+        local_fogs = sdn.local_fogs
+        neighbor_fogs = [f for n in sdn.neighbor_sdns for f in n.local_fogs]
         
-        # 3b. Apply k-hop distance penalty
-        U_penalized = apply_distance_penalty(
-            U_base, 
-            hop_count, 
-            k_max, 
-            delta=0.8
-        )
-        
-        utilities.append((fog_node, U_penalized))
-    
-    # 4. Rank fog nodes by utility (descending)
-    ranked_fog_nodes = sorted(utilities, key=lambda x: x[1], reverse=True)
-    
-    return ranked_fog_nodes
-```
-
----
-
-### Phase 3: Matching & Acceptance Decision
-
-```python
-def match_task_to_fog_node(task, ranked_fog_nodes):
-    """
-    Iterate through ranked fog nodes, attempt matching via acceptance probability.
-    
-    Args:
-        task: Task object
-        ranked_fog_nodes: List of (fog_node, utility) sorted by utility
-    
-    Returns:
-        matched_fog_node: Fog node that accepted the task (or None if all rejected)
-    """
-    for fog_node, utility in ranked_fog_nodes:
-        # 1. Calculate temporal decay-weighted acceptance probability
-        acceptance_prob = calculate_acceptance_probability(
-            task=task,
-            fog_node=fog_node,
-            utility=utility
-        )
-        
-        # 2. Stochastic acceptance decision
-        if random.random() < acceptance_prob:
-            # 2a. Check capacity constraint
-            if fog_node.current_queue < fog_node.queue_capacity:
-                # Accept task
-                fog_node.add_task(task)
-                return fog_node
-            else:
-                # Queue full, reject despite high probability
+        for task in sdn.local_edges:
+            # Universal Tiered Evaluation
+            best_fog, best_utility, best_probability = run_policy(
+                "AC_DL_MATCH", sdn, task, local_fogs, neighbor_fogs, t
+            )
+            
+            if not best_fog:
+                cloud_escalation()
                 continue
-        else:
-            # Rejected by acceptance probability
-            continue
-    
-    # All local fog nodes rejected
-    return None
-```
+                
+            outcome = best_fog.simulate_outcome()
+            
+            # The SDN Learns Federatively from its Domain's physical feedback
+            features = [best_utility, best_fog.resources_left]
+            sdn.domain_db.append((features, outcome))
 
----
-
-### Phase 4: Cross-Domain Migration (If Local Fails)
-
-```python
-def attempt_cross_domain_migration(task, sdn_controllers, k_max=3):
-    """
-    If local domain rejects task, attempt migration to other domains.
-    
-    Args:
-        task: Task object
-        sdn_controllers: List of all SDN controllers (all domains)
-        k_max: Maximum hop distance threshold
-    
-    Returns:
-        matched_fog_node: Fog node from another domain (or None if all reject)
-    """
-    # 1. Identify task's local domain
-    local_sdn = get_local_sdn_controller(task.source_location, sdn_controllers)
-    
-    # 2. Get other domains
-    other_domains = [sdn for sdn in sdn_controllers if sdn != local_sdn]
-    
-    # 3. Calculate utilities in each domain
-    cross_domain_options = []
-    for sdn in other_domains:
-        ranked_fog_nodes = handle_task_arrival(task, [sdn], k_max)
-        if ranked_fog_nodes:
-            best_fog_node, best_utility = ranked_fog_nodes[0]
-            cross_domain_options.append((best_fog_node, best_utility, sdn))
-    
-    # 4. Rank cross-domain options
-    cross_domain_options = sorted(cross_domain_options, key=lambda x: x[1], reverse=True)
-    
-    # 5. Apply threshold factor (hysteresis)
-    threshold_factor = 0.85  # Only migrate if 15% better than best local option
-    local_best_utility = get_local_best_utility(task, local_sdn, k_max)
-    
-    for fog_node, utility, sdn in cross_domain_options:
-        if utility > local_best_utility * threshold_factor:
-            # Attempt match with this cross-domain fog node
-            matched = match_task_to_fog_node(task, [(fog_node, utility)])
-            if matched:
-                # Log cross-domain migration
-                log_cross_domain_success(task, fog_node, sdn)
-                return matched
-    
-    # All cross-domain options also rejected
-    return None
+        # Train Stochastic Regression asynchronously per Domain
+        if t % 5 == 0:
+            sdn.learn_from_domain()
 ```
 
 ---
@@ -794,70 +603,29 @@ def execute_scale_in(domain_sdn, fog_node_to_remove):
 
 ## 📊 Simulation Architecture
 
-### iFogSim Integration
+### Simulation Framework Details
 
-**iFogSim Framework**: Java-based fog computing simulator with event-driven architecture.
+**Python Benchmark Simulator**: A strictly pure-Python environment, architected with Numpy and PyTorch, bypassing the bloated nature of Java-based tools like iFogSim for ultra-fast, highly concurrent DRL learning.
 
-#### Custom Modules for AC-DL-MATCH
+#### Core Python Engine Simulation Loop
 
-```java
-// 1. AC_DL_MATCH_TaskOffloading.java
-public class AC_DL_MATCH_TaskOffloading extends TaskOffloadingPolicy {
-    private Map<String, Double> contextWeights;  // Task-type specific weights
-    private TemporalDecayCalculator decayCalc;
-    private KHopLocalityManager localityMgr;
-    
-    @Override
-    public FogNode selectFogNode(Task task, List<FogNode> availableNodes) {
-        // 1. Filter nearby nodes (k-hop)
-        List<FogNode> nearbyNodes = localityMgr.filterByHopDistance(task, availableNodes, 3);
+```python
+# 1. AC_DL_MATCH_TaskOffloading
+class AC_DL_MATCH_TaskOffloading:
+    def select_fog_node(self, task, local_fogs, neighbor_fogs, sdn_controller):
+        # 1. Evaluate Local Domain
+        local_best = self.rank_by_utility(task, local_fogs)
         
-        // 2. Calculate utilities with context-aware weights
-        Map<FogNode, Double> utilities = calculateUtilities(task, nearbyNodes);
+        # 2. Evaluate Neighbor Domain (with penalty)
+        neighbor_best = self.rank_by_utility(task, neighbor_fogs, apply_penalty=True)
         
-        // 3. Rank by utility
-        List<FogNode> ranked = rankByUtility(utilities);
+        # 3. Probabilistic Verification
+        for node in [local_best, neighbor_best]:
+            prob = sdn_controller.get_acceptance_probability(node)
+            if math.random() < prob and node.has_capacity():
+                return node  # Successfully Matched
         
-        // 4. Iterate through ranked nodes, check acceptance probability
-        for (FogNode node : ranked) {
-            double acceptProb = decayCalc.calculateAcceptanceProbability(
-                task, node, utilities.get(node)
-            );
-            
-            if (Math.random() < acceptProb && node.hasCapacity()) {
-                return node;  // Matched
-            }
-        }
-        
-        return null;  // All rejected
-    }
-}
-
-// 2. InfrastructureElasticityManager.java
-public class InfrastructureElasticityManager {
-    private double rejectionThreshold = 0.18;
-    private double crossDomainThreshold = 0.45;
-    private double utilizationThreshold = 0.25;
-    
-    public void checkScaleOutTrigger(MetricsWindow metrics) {
-        double rejectionRate = metrics.getRejectionRate();
-        double crossDomainRate = metrics.getCrossDomainRate();
-        
-        if (rejectionRate > rejectionThreshold && crossDomainRate < crossDomainThreshold) {
-            executeScaleOut();
-        }
-    }
-    
-    public void checkScaleInCandidates(List<FogNode> nodes, MetricsHistory history) {
-        for (FogNode node : nodes) {
-            double avgUtilization = history.getAverageUtilization(node, 10);
-            
-            if (avgUtilization < utilizationThreshold) {
-                executeScaleIn(node);
-            }
-        }
-    }
-}
+        return None  # Escalate to Cloud
 ```
 
 ---
