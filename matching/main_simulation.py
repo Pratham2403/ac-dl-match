@@ -156,8 +156,9 @@ def run_simulation(policy, env_config, quality="average", trace_df=None):
             for n_sdn in sdn.neighbor_sdns:
                 neighbor_fogs.extend(n_sdn.local_fogs)
                 
-            for edge in sdn.local_edges:
-                if np.random.poisson(lam=0.8) == 0:
+            edge_activations = np.random.poisson(lam=0.8, size=len(sdn.local_edges))
+            for idx, edge in enumerate(sdn.local_edges):
+                if edge_activations[idx] == 0:
                     continue
                     
                 t_global_active_edges += 1
@@ -165,8 +166,8 @@ def run_simulation(policy, env_config, quality="average", trace_df=None):
                 matched = False
                 
                 # Dynamic scope: task checks local topology, falls back to neighbors
-                current_local = local_fogs.copy()
-                current_neighbor = neighbor_fogs.copy()
+                current_local = local_fogs
+                current_neighbor = neighbor_fogs
                 
                 for stage in range(K_MAX_RETRIES):
                     if not current_local and not current_neighbor:
@@ -177,7 +178,7 @@ def run_simulation(policy, env_config, quality="average", trace_df=None):
                     )
                     
                     if not best_fog:
-                        log_message(f"   [ABORT] Edge-{edge.id} completely exhausted local/neighbor fogs at Stage {stage}.")
+                        if _log_file_handle: log_message(f"   [ABORT] Edge-{edge.id} completely exhausted local/neighbor fogs at Stage {stage}.")
                         break # Policy actively opted for cloud escalation
                         
                     is_neighbor = best_fog not in sdn.local_fogs
@@ -207,19 +208,23 @@ def run_simulation(policy, env_config, quality="average", trace_df=None):
                         cum_utility += true_utility
                         m_ref["last_time"] = t
                         matched = True
-                        log_message(f"   [SUCCESS] Edge-{edge.id} -> Fog-{best_fog.id} | Stage: {stage} | Util: {true_utility:.3f} | Prob: {best_prob:.3f} | Delay: {m_ref['delay']:.1f}ms")
+                        if _log_file_handle: log_message(f"   [SUCCESS] Edge-{edge.id} -> Fog-{best_fog.id} | Stage: {stage} | Util: {true_utility:.3f} | Prob: {best_prob:.3f} | Delay: {m_ref['delay']:.1f}ms")
                         break 
                     else:
                         m_ref["failures"] += 1
                         m_ref["last_pi"] = 0.9 * m_ref["last_pi"] + 0.1 * 0.0 # multiplied by 0.0 for visual symmetry
                         t_global_delay += (m_ref["delay"] * 0.05) # rejection overhead
                         m_ref["last_time"] = t
-                        if best_fog in current_local: current_local.remove(best_fog)
-                        if best_fog in current_neighbor: current_neighbor.remove(best_fog)
-                        log_message(f"   [REJECT] Edge-{edge.id} -> Fog-{best_fog.id} | Stage: {stage} | Capacity/Resource limit reached.")
+                        if best_fog in current_local:
+                            if current_local is local_fogs: current_local = local_fogs.copy()
+                            current_local.remove(best_fog)
+                        if best_fog in current_neighbor:
+                            if current_neighbor is neighbor_fogs: current_neighbor = neighbor_fogs.copy()
+                            current_neighbor.remove(best_fog)
+                        if _log_file_handle: log_message(f"   [REJECT] Edge-{edge.id} -> Fog-{best_fog.id} | Stage: {stage} | Capacity/Resource limit reached.")
                         
                 if not matched:
-                    log_message(f"   [CLOUD ESCALATION] Edge-{edge.id} failed all K={K_MAX_RETRIES} attempts. Routed to Cloud (Penalty Applied).")
+                    if _log_file_handle: log_message(f"   [CLOUD ESCALATION] Edge-{edge.id} failed all K={K_MAX_RETRIES} attempts. Routed to Cloud (Penalty Applied).")
                     sdn_rejects += 1
                     t_global_rejects += 1
                     t_global_delay += CLOUD_DELAY_PENALTY
@@ -269,6 +274,8 @@ if __name__ == "__main__":
     parser.add_argument("--stress", action="store_true", help="Scale up devices massively.")
     parser.add_argument('--real', action='store_true', help='Inject real Alibaba Cluster Traces.')
     parser.add_argument("--ablation", action="store_true", help="Add ablation study variants (requires --tests --demo).")
+    parser.add_argument("--drl", action="store_true", help="Force include DRL baseline in full tests (WARNING: Very Slow).")
+    parser.add_argument("--pso", action="store_true", help="Force include PSO baseline in full tests (WARNING: Very Slow).")
     parser.add_argument("--run", type=int, default=1, help="Number of evaluation runs to average.")
     args = parser.parse_args()
 
@@ -296,12 +303,14 @@ if __name__ == "__main__":
         data_mode = 'Real Alibaba Traces' if trace_df is not None else 'Synthetic'
         print(f"\n[INIT] Running Evaluation Suite | Runs: {TOTAL_MC_RUNS} | Slots: {sim_slots} | Quality: {quality} | Data: {data_mode} | Mode: Federated Multi-SDN")
         
-        # --demo includes all policies (including META_PSO for full presentation)
-        # --tests without --demo excludes META_PSO (too slow for large-scale benchmarks)
+        # --demo includes all policies automatically
+        # --tests without --demo excludes slow algorithms by default, unless explicitly requested via flags
         policies = ["RANDOM", "GREEDY", "BLM_TS", "MV_UCB", "DRL", "META_PSO", "ORIGINAL_DL_MATCH", "AC_DL_MATCH"]
         if not getattr(args, 'demo', False):
-            if "META_PSO" in policies: policies.remove("META_PSO")
-            if "DRL" in policies: policies.remove("DRL")
+            if "META_PSO" in policies and not getattr(args, 'pso', False): 
+                policies.remove("META_PSO")
+            if "DRL" in policies and not getattr(args, 'drl', False): 
+                policies.remove("DRL")
         
         # Ablation only works in demo mode (fast enough to include extra policies)
         if getattr(args, 'ablation', False) and getattr(args, 'demo', False):
