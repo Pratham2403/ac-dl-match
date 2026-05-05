@@ -49,15 +49,15 @@ graph TB
 T = {T₁, T₂, ..., Tₘ}
 
 Each task Tᵢ is characterized by:
-Tᵢ = (Sᵢ, χᵢ, τᵢ)
+Tᵢ = (Sᵢ, χᵢ, wᵢ)
 
 Where:
 - Sᵢ ∈ ℝ⁺ : Task data size (MB)
 - χᵢ ∈ ℝ⁺ : Computational complexity (CPU cycles)
-- τᵢ ∈ {delay-sensitive, energy-critical, mission-critical} : Task type
+- wᵢ ∈ {1,...,10}⁴ : Per-edge SLA weight vector (Delay, Energy, Reliability, Cost)
 ```
 
-**Task Type Classification**:
+**Conceptual Profile Mapping** (skew of wᵢ encodes the task class):
 ```python
 τᵢ = {
     'delay-sensitive':   # Autonomous vehicles, AR/VR, real-time gaming
@@ -196,23 +196,26 @@ Where:
 
 ---
 
-#### Task-Specific Weight Assignment (ω^Tᵢ)
+#### Per-Edge SLA Weight Sampling (wᵢ)
+
+Each edge node carries its own integer weight vector:
 
 ```
-ω^Tᵢ = {ω₁^Tᵢ, ω₂^Tᵢ, ω₃^Tᵢ, ω₄^Tᵢ}
+wᵢ = (w₁, w₂, w₃, w₄),    wₖ ∼ U{1, ..., 10}
 
-Weight Assignment Table:
+Implementation: edges/main_simulation.py:101
+    edge.weights = [random.randint(1, 10) for _ in range(4)]
 
-┌──────────────────────┬─────────┬─────────┬─────────┬─────────┐
-│ Task Type (τᵢ)       │ ω₁ (D)  │ ω₂ (E)  │ ω₃ (R)  │ ω₄ (C)  │
-├──────────────────────┼─────────┼─────────┼─────────┼─────────┤
-│ Delay-Sensitive      │  0.6    │  0.1    │  0.2    │  0.1    │
-│ Energy-Critical      │  0.2    │  0.5    │  0.2    │  0.1    │
-│ Mission-Critical     │  0.3    │  0.1    │  0.5    │  0.1    │
-└──────────────────────┴─────────┴─────────┴─────────┴─────────┘
-
-Constraint: Σ ωᵢ = 1.0 (normalized weights)
+Normalization is implicit: U_ij = Σ wₖ · X'ₖ / Σ wₖ
 ```
+
+This per-edge sampling models the continuum of heterogeneous QoS profiles found in real IoT deployments — strictly more general than fixed task-class enumeration. Representative profiles for exposition:
+
+| Profile             | w₁ (D) | w₂ (E) | w₃ (R) | w₄ (C) |
+|---------------------|:------:|:------:|:------:|:------:|
+| Delay-priority      |   9    |   2    |   3    |   1    |
+| Energy-priority     |   2    |   9    |   3    |   1    |
+| Reliability-priority|   3    |   2    |   9    |   1    |
 
 **Note on Scale & Context Injecting:**
 Because applications (Video caching vs Emergency Braking) dynamically swap inside the IoT cluster, the tasks change dynamically. Our Deep Learning Algorithm (DRL) specifically ingests `(4 × max_sdn_fogs) + 4` variables where the exact 4 $\omega$ weights of the active Edge Node are inherently concatenated to the tensor so the learning agent fully models identical internal contexts! 
@@ -271,23 +274,29 @@ q_ij^avail / q_ij^total : Queue availability ratio
   - q_ij^total = Q_j (max capacity)
 ```
 
-**Example Calculation**:
-
-**Scenario**: Task T1 last interacted with Fog Node F1 10 time units ago. Historical success rate = 0.85.
+**Bayesian Reversion to Neutral Prior**: Rather than letting decayed history collapse toward zero (which would overweight new utility blindly), AC-DL-MATCH reverts the *missing* mass toward 0.5 — an uninformed estimate. The effective prior used inside the sigmoid is:
 
 ```
-U_ij = 1.974 (from previous calculation)
-π_ij^history = 0.85
-Δt_ij = 10
-q_ij^avail = 40 (out of 50 total)
-
-π_ij = σ(0.5 × 1.974 + 0.3 × 0.85 × e^(-0.1×10) + 0.2 × (40/50))
-     = σ(0.987 + 0.3 × 0.85 × 0.368 + 0.2 × 0.8)
-     = σ(0.987 + 0.094 + 0.16)
-     = σ(1.241)
-     = 1 / (1 + e^(-1.241))
-     = 0.776 (77.6% acceptance probability)
+π_eff = π_history · e^(-λΔt) + 0.5 · (1 - e^(-λΔt))
 ```
+
+**Example Calculation** (using bootstrap coefficients α=β=γ=1.0, intercept=0; pre-training):
+
+**Scenario**: Task T1 last interacted with Fog Node F1 10 time units ago. Historical success rate = 0.85, normalized utility 0.80, fog has 80% resources free.
+
+```
+U_ij        = 0.80
+π_history   = 0.85
+Δt_ij       = 10  →  decay = e^(-0.1×10) = 0.368
+π_eff       = 0.85 × 0.368 + 0.5 × (1 - 0.368)
+            = 0.313 + 0.316 = 0.629
+resources_left = 0.80
+
+z   = 0 + 1.0 × 0.80 + 1.0 × 0.629 + 1.0 × 0.80 = 2.229
+π_ij = σ(2.229) = 1 / (1 + e^(-2.229)) = 0.903  (90.3% acceptance probability)
+```
+
+After ~40 task interactions per SDN, the bootstrap coefficients are replaced by per-domain logistic-regression-fitted (α, β, γ, intercept) — see `learn_from_history.py`.
 
 ---
 
@@ -357,9 +366,9 @@ Where:
 - High `ρ_reject` → Many tasks failing locally
 - **Action**: Need more local capacity → Add fog node
 
-**Typical Thresholds**:
+**Implementation Threshold** (`main_simulation.py:84`):
 ```
-θ_reject = 0.15 to 0.20 (15-20% rejection rate)
+REJECT_THRESHOLD = 0.10  (scale-out if domain rejection rate > 10%)
 ```
 
 ---
@@ -399,10 +408,10 @@ If sustained for θ_time = 10 slots:
     Remove F_j to save energy
 ```
 
-**Typical Thresholds**:
+**Implementation Thresholds** (`main_simulation.py:85`, `algorithms/scale_in.py`):
 ```
-θ_util = 0.20 to 0.30 (20-30% utilization threshold)
-θ_time = 5 to 10 time slots (sustained low usage)
+UTIL_THRESHOLD = 0.30  (scale-in if avg utilization < 30%)
+W = 5 slots            (sliding-window size, deque(maxlen=5))
 ```
 
 ---
@@ -645,11 +654,13 @@ class ContextAwareUtilityCalculator:
     Calculate context-aware multi-objective utility for task-fog node pairs.
     """
     
-    # Task-type specific weight configurations
-    WEIGHT_CONFIGS = {
-        'delay-sensitive': {'w1': 0.6, 'w2': 0.1, 'w3': 0.2, 'w4': 0.1},
-        'energy-critical': {'w1': 0.2, 'w2': 0.5, 'w3': 0.2, 'w4': 0.1},
-        'mission-critical': {'w1': 0.3, 'w2': 0.1, 'w3': 0.5, 'w4': 0.1},
+    # Per-edge SLA weights are sampled at admission (main_simulation.py:101):
+    #   edge.weights = [random.randint(1, 10) for _ in range(4)]
+    # Representative skew profiles (illustrative, not enumerated in code):
+    REPRESENTATIVE_PROFILES = {
+        'delay-priority':       (9, 2, 3, 1),  # vehicles, AR/VR
+        'energy-priority':      (2, 9, 3, 1),  # battery sensors
+        'reliability-priority': (3, 2, 9, 1),  # healthcare monitors
     }
     
     def __init__(self, 
@@ -749,10 +760,10 @@ class ContextAwareUtilityCalculator:
 ## 🔧 Implementation Roadmap
 
 ### Phase 1: Core Algorithm (Weeks 1-4)
-- [ ] Implement context-aware utility calculation
-- [ ] Implement temporal decay acceptance probability
-- [ ] Implement k-hop locality filtering
-- [ ] Unit tests for all components
+- [x] Implement context-aware utility calculation (per-edge SLA-weighted, O(1) normalization)
+- [x] Implement temporal decay acceptance probability (with Bayesian reversion to 0.5 prior)
+- [x] Implement SDN-domain reachability filtering (local ∪ neighbor; no hop counting)
+- [x] Unit tests for all components
 
 ### Phase 2: Infrastructure Elasticity (Weeks 5-6)
 - [ ] Implement scale-out policy
@@ -764,10 +775,10 @@ class ContextAwareUtilityCalculator:
 - [ ] SDN controller coordination
 - [ ] Domain handoff protocols
 
-### Phase 4: iFogSim Integration (Weeks 9-10)
-- [ ] Java wrapper for Python algorithms
-- [ ] Custom iFogSim modules
-- [ ] Integration testing
+### Phase 4: Native Python Benchmark Harness (Weeks 9-10)
+- [x] Pure-Python simulation engine (NumPy + PyTorch + Scikit), no Java/iFogSim dependency
+- [x] Time-series result generation (Plotly PNG export) for all 8 baseline policies
+- [x] Optional Alibaba cluster trace ingest for stress validation
 
 ### Phase 5: Evaluation & Experiments (Weeks 11-12)
 - [ ] Run baseline comparisons

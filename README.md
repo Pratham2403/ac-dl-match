@@ -53,27 +53,21 @@ Traditional multi-objective functions suffer from *dimensional collapse*, where 
 
 #### 1️⃣ **Context-Aware Multi-Objective Utility Function**
 
-Adapts optimization weights based on **task type**:
+Each edge node carries its own per-task SLA weight vector $\mathbf{w}_i = (w_1, w_2, w_3, w_4)$ — sampled uniformly from $\{1,\ldots,10\}^4$ at admission — that captures heterogeneous QoS priorities (delay-priority for vehicles, energy-priority for battery sensors, reliability-priority for healthcare).
 
-| Task Type | Priority | Weight Focus |
-|-----------|----------|--------------|
-| Autonomous Vehicles | Delay-sensitive | High ω_D (delay weight) |
-| Battery Sensors | Energy-critical | High ω_E (energy weight) |
-| Healthcare Monitoring | Mission-critical | High ω_R (reliability weight) |
-
-**Formula**:
+**Formula** (SLA-bounded normalized weighted average):
 ```
-U_ij^modified = ω_1^Ti × (1/D_ij) + ω_2^Ti × (1/E_ij) + ω_3^Ti × R_j - ω_4^Ti × C_ij
+U_ij = (w_1·D'_ij + w_2·E'_ij + w_3·R'_j + w_4·C'_ij) / (w_1 + w_2 + w_3 + w_4)
 
-Where:
-- D_ij = Total delay (propagation + transmission + execution)
-- E_ij = Energy consumption (P_tran × (S_i / r_ij) + P_idle × Q_j)
-- R_j = Fog node reliability score (Uptime / TotalTime)
-- C_ij = Monetary cost (C_j × S_i)
-- ω^Ti = Task-specific weights (vary by task type τ_i)
+Where each metric is normalized into [0,1] via the O(1) SLA-Bounding Protocol:
+- D'_ij = max(0, 1 - D_ij / D_max)    delay component
+- E'_ij = max(0, 1 - E_ij / E_max)    energy component
+- R'_j  = min(R_j, 1.0)                reliability score
+- C'_ij = max(0, 1 - C_ij / C_max)    cost component
+- w_k   ∈ {1,...,10}, sampled per-edge to model SLA heterogeneity
 ```
 
-**Innovation**: Simultaneously optimizes delay, energy, reliability, and cost—addressing the multi-QoS gap identified in fog computing surveys.
+**Innovation**: Simultaneously optimizes delay, energy, reliability, and cost — and eliminates dimensional collapse by mapping every metric into a unit interval prior to weighting, with no centralized synchronization.
 
 ---
 
@@ -222,10 +216,10 @@ Unlike centralized cloud or hierarchical fog-cloud, AC-DL-MATCH operates **fully
 
 ### Novel Contributions
 1. **First integration** of matching theory with dynamic infrastructure elasticity
-2. **Context-aware** multi-objective optimization (task-type adaptive)
-3. **Temporal decay** weighting for dynamic fog node performance tracking
-4. **k-hop locality** for scalable distributed computation
-5. **Multi-domain** cross-provider task migration
+2. **Context-aware** multi-objective optimization (per-edge SLA weight vectors)
+3. **Temporal decay** weighting for dynamic fog node performance tracking with Bayesian reversion to a neutral prior
+4. **Tiered SDN federation** (local → neighbor SDN with 20% penalty → cloud) for scalable distributed search bounded to O(M×k)
+5. **Per-domain federated logistic regression** (no cross-SDN data sharing)
 
 ---
 
@@ -341,7 +335,7 @@ T_i = (S_i, χ_i, τ_i)
 Where:
 - S_i = Task size (MB)
 - χ_i = Computational complexity (CPU cycles)
-- τ_i = Task type (delay-sensitive / energy-critical / mission-critical)
+- w_i = (w1, w2, w3, w4) ∈ {1,...,10}^4 : per-edge SLA weight vector (sampled at admission); high w1 ≈ delay-priority, high w2 ≈ energy-priority, high w3 ≈ reliability-priority
 ```
 
 **Example Tasks**:
@@ -433,7 +427,7 @@ Target: 60-80% (balance between capacity and energy savings)
 Compare AC-DL-MATCH against:
 
 1. **Static Offloading**: Fixed task-to-fog mapping (no adaptation)
-2. **Standard DL-MATCH**: Original matching theory (no temporal decay, no k-hop, no elasticity)
+2. **Standard DL-MATCH**: Original matching theory (no temporal decay, no SDN federation, no elasticity)
 3. **Deep Reinforcement Learning (DRL)**: State-of-the-art ML approach (DDPG, A3C)
 4. **Greedy Local Offloading**: Always select nearest fog node
 5. **Random Offloading**: Random fog node selection
